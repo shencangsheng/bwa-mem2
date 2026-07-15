@@ -1,12 +1,8 @@
 # Extra builds (flat)
 
-Release ships **two** tarballs — pick by OS:
+The `*_centos7_x64-linux` package runs on CentOS 7.9 / glibc 2.17 and newer.
+Its root dispatcher uses upstream Intel-optimized binaries on compatible Intel
+CPUs, then hands AMD EPYC and Intel AVX-512 CPUs without CLWB to the portable
+GCC binaries in this directory.
 
-| Tarball suffix | glibc | Root binaries |
-|----------------|-------|---------------|
-| `*_centos7_x64-linux` | 2.17 (CentOS 7+) | GCC multi |
-| `*_intel_x64-linux` | 2.33+ (Ubuntu 22.04+) | Intel official |
-
-See `extra/README.md` inside each package for that flavor’s file list.
-On CentOS 7, only the `centos7` tarball works (`GLIBC_2.33` errors mean you
-grabbed the Intel package).
+See `extra/README.md` inside the package for the full file list.

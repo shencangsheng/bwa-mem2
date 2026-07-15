@@ -1,13 +1,9 @@
-# Ship TWO tar.bz2 files per release:
+# Ship one CentOS 7-compatible tar.bz2 file per release:
 #
 #   bwa-mem2-<ver>_centos7_x64-linux.tar.bz2
 #     manylinux2014 / glibc 2.17 — CentOS 7 / RHEL 7+
-#     root = GCC multi + super-dispatcher
-#
-#   bwa-mem2-<ver>_intel_x64-linux.tar.bz2
-#     ubuntu-22.04 / glibc 2.33+ — modern hosts only
-#     root = Intel official ISA siblings + super-dispatcher
-#     extra/gcc-full = handoff for no-CLWB / AMD (#160, #236)
+#     root = upstream v2.2.1 Intel ISA siblings + super-dispatcher
+#     extra/gcc-full = AMD / Intel AVX-512 without CLWB fallback
 #
 # See Makefile.platforms and:
 #   https://github.com/bwa-mem2/bwa-mem2/issues/160
@@ -31,8 +27,57 @@ permissions:
 
 env:
   MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64
+  UPSTREAM_BINARY_VERSION: "2.2.1"
+  UPSTREAM_BINARY_SHA256: b4cfdbce8cc07cdf3f6a920facabc29c976cf77dd53573369508111d6d1c555b
 
 jobs:
+  stage-upstream-official:
+    name: Stage upstream v2.2.1 binaries
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download and verify upstream release
+        run: |
+          set -euo pipefail
+          archive="bwa-mem2-${UPSTREAM_BINARY_VERSION}_x64-linux.tar.bz2"
+          url="https://github.com/bwa-mem2/bwa-mem2/releases/download/v${UPSTREAM_BINARY_VERSION}/${archive}"
+          curl --fail --location --retry 3 --output "${archive}" "${url}"
+          echo "${UPSTREAM_BINARY_SHA256}  ${archive}" | sha256sum --check -
+          tar -xjf "${archive}"
+
+          source_dir="bwa-mem2-${UPSTREAM_BINARY_VERSION}_x64-linux"
+          stage_dir="stage/c7-intel-official"
+          mkdir -p "${stage_dir}"
+          for name in sse41 sse42 avx avx2 avx512bw; do
+            bin="${source_dir}/bwa-mem2.${name}"
+            test -x "${bin}"
+            max_glibc="$(
+              objdump -T "${bin}" |
+                awk 'match($0, /GLIBC_[0-9.]+/) { print substr($0, RSTART + 6, RLENGTH - 6) }' |
+                sort -Vu |
+                awk 'END { print }'
+            )"
+            echo "${bin}: max GLIBC_${max_glibc}"
+            if [[ "$(printf '%s\n' "${max_glibc}" "2.17" | sort -V | awk 'END { print }')" != "2.17" ]]; then
+              echo "ERROR: ${bin} requires GLIBC_${max_glibc}" >&2
+              exit 1
+            fi
+            cp -a "${bin}" "${stage_dir}/"
+          done
+          {
+            echo "source=upstream bwa-mem2 v${UPSTREAM_BINARY_VERSION}"
+            echo "url=${url}"
+            echo "sha256=${UPSTREAM_BINARY_SHA256}"
+            echo "glibc_ceiling=2.17"
+            echo "role=official Intel-optimized ISA siblings"
+          } > "${stage_dir}/BUILD_INFO.txt"
+
+      - name: Upload official ISA siblings
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-c7-intel-official
+          path: stage/c7-intel-official
+          if-no-files-found: error
+
   # ── CentOS 7 / glibc 2.17 (manylinux2014) ─────────────────────────────
   build-centos7-bundle:
     name: C7 Bundle ${{ matrix.artifact }}
@@ -110,182 +155,16 @@ jobs:
           path: stage/${{ matrix.artifact }}
           if-no-files-found: error
 
-  # ── Intel / modern glibc (ubuntu-22.04 host) ──────────────────────────
-  build-intel-bundle:
-    name: Intel Bundle ${{ matrix.artifact }}
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: intel-multi
-            artifact: intel-official
-            compiler: intel
-          - platform: gcc-multi
-            artifact: gcc-full
-            compiler: gcc
-          - platform: gcc-avx2
-            artifact: gcc-avx2-fleet
-            compiler: gcc
-          - platform: intel-avx512-noclwb
-            artifact: intel-avx512-noclwb
-            compiler: intel
-    steps:
-      - name: Checkout (with safestringlib submodule)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential zlib1g-dev curl ca-certificates gnupg
-
-      - name: Install Intel oneAPI C++
-        if: matrix.compiler == 'intel'
-        run: |
-          curl -sS -L https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-            | sudo tee /etc/apt/sources.list.d/oneAPI.list
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            intel-oneapi-compiler-dpcpp-cpp
-
-          set +e
-          # shellcheck disable=SC1091
-          source /opt/intel/oneapi/setvars.sh
-          set -e
-
-          ICPX="$(command -v icpx || true)"
-          ICX="$(command -v icx || true)"
-          if [[ -z "${ICPX}" || -z "${ICX}" ]]; then
-            for d in /opt/intel/oneapi/compiler/*/bin/compiler /opt/intel/oneapi/compiler/*/bin; do
-              [[ -x "${d}/icpx" ]] && ICPX="${d}/icpx"
-              [[ -x "${d}/icx" ]] && ICX="${d}/icx"
-            done
-          fi
-          test -n "${ICPX}" && test -n "${ICX}"
-          sudo ln -sfn "${ICPX}" /usr/local/bin/icpc
-          sudo ln -sfn "${ICX}" /usr/local/bin/icc
-          echo "/usr/local/bin" >> "${GITHUB_PATH}"
-          dirname "${ICPX}" >> "${GITHUB_PATH}"
-          dirname "${ICX}" >> "${GITHUB_PATH}"
-          icpc --version
-          icc --version
-
-      - name: Build PLATFORM=${{ matrix.platform }}
-        run: |
-          if [[ "${{ matrix.compiler }}" == "intel" ]]; then
-            if [[ -f /opt/intel/oneapi/setvars.sh ]]; then
-              # shellcheck disable=SC1091
-              source /opt/intel/oneapi/setvars.sh
-            fi
-          fi
-          make -f Makefile.platforms PLATFORM="${{ matrix.platform }}"
-          ls -lh bwa-mem2 bwa-mem2.* || true
-          file bwa-mem2 bwa-mem2.* || true
-
-      - name: Stage binaries
-        run: |
-          STAGE="stage/${{ matrix.artifact }}"
-          mkdir -p "${STAGE}"
-          for b in bwa-mem2 bwa-mem2.sse41 bwa-mem2.sse42 bwa-mem2.avx \
-                   bwa-mem2.avx2 bwa-mem2.avx512bw; do
-            [[ -e "$b" ]] && cp -a "$b" "${STAGE}/"
-          done
-          {
-            echo "platform=${{ matrix.platform }}"
-            echo "compiler=${{ matrix.compiler }}"
-            echo "artifact=${{ matrix.artifact }}"
-            echo "host=ubuntu-22.04"
-            echo "glibc_target=2.33+"
-            echo "note=Modern hosts only — will NOT run on CentOS 7"
-            if command -v icpc >/dev/null 2>&1; then icpc --version | head -n1; fi
-            if command -v g++ >/dev/null 2>&1; then g++ --version | head -n1; fi
-            ldd --version | head -n1
-          } > "${STAGE}/BUILD_INFO.txt"
-          ls -lh "${STAGE}"
-
-      - name: Upload staged binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: bin-${{ matrix.artifact }}
-          path: stage/${{ matrix.artifact }}
-          if-no-files-found: error
-
-  build-intel-single:
-    name: Intel Single ${{ matrix.artifact }}
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: gcc-sse41
-            artifact: sse41
-          - platform: gcc-sse42
-            artifact: sse42
-          - platform: gcc-avx
-            artifact: avx
-          - platform: gcc-avx2-bin
-            artifact: avx2
-          - platform: gcc-avx512bw
-            artifact: avx512bw
-    steps:
-      - name: Checkout (with safestringlib submodule)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential zlib1g-dev
-
-      - name: Build PLATFORM=${{ matrix.platform }}
-        run: |
-          make -f Makefile.platforms clean || true
-          make -f Makefile.platforms PLATFORM="${{ matrix.platform }}"
-          ls -lh bwa-mem2*
-          file bwa-mem2*
-
-      - name: Stage binaries
-        run: |
-          STAGE="stage/${{ matrix.artifact }}"
-          mkdir -p "${STAGE}"
-          cp -a bwa-mem2 "${STAGE}/"
-          for b in bwa-mem2.*; do
-            [[ -e "$b" ]] && cp -a "$b" "${STAGE}/"
-          done
-          {
-            echo "platform=${{ matrix.platform }}"
-            echo "compiler=gcc"
-            echo "artifact=${{ matrix.artifact }}"
-            echo "host=ubuntu-22.04"
-            echo "glibc_target=2.33+"
-            g++ --version | head -n1
-            ldd --version | head -n1
-          } > "${STAGE}/BUILD_INFO.txt"
-          ls -lh "${STAGE}"
-
-      - name: Upload staged binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: bin-${{ matrix.artifact }}
-          path: stage/${{ matrix.artifact }}
-          if-no-files-found: error
-
-  # ── Package both flavors ──────────────────────────────────────────────
+  # ── Package the CentOS 7-compatible release ───────────────────────────
   package:
-    name: Assemble both tar.bz2
+    name: Assemble CentOS 7 tar.bz2
     needs:
+      - stage-upstream-official
       - build-centos7-bundle
       - build-centos7-single
-      - build-intel-bundle
-      - build-intel-single
+    outputs:
+      version: ${{ steps.assemble.outputs.version }}
+      release_tag: ${{ steps.assemble.outputs.release_tag }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout (docs / scripts)
@@ -298,19 +177,25 @@ jobs:
           pattern: bin-*
           merge-multiple: false
 
-      - name: Assemble centos7 + intel packages
+      - name: Assemble CentOS 7 package
+        id: assemble
         run: |
           VERSION="${GITHUB_REF_NAME}"
           case "${VERSION}" in
-            v*) ;;
-            *) VERSION="sha-${GITHUB_SHA::8}" ;;
+            v*)
+              RELEASE_TAG="${VERSION}"
+              ;;
+            *)
+              VERSION="sha-${GITHUB_SHA::8}"
+              RELEASE_TAG="build-${GITHUB_SHA}"
+              ;;
           esac
           chmod +x scripts/ci-package.sh
           mkdir -p release-out
-          scripts/ci-package.sh centos7 "${VERSION}" dist release-out
-          scripts/ci-package.sh intel "${VERSION}" dist release-out
+          scripts/ci-package.sh "${VERSION}" dist release-out
           ls -lh release-out/*.tar.bz2
-          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload release tarballs
         uses: actions/upload-artifact@v4
@@ -339,39 +224,28 @@ jobs:
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.sha) }}
-          name: bwa-mem2 binaries ${{ github.ref_name }}
+          tag_name: ${{ needs.package.outputs.release_tag }}
+          name: bwa-mem2 binaries ${{ needs.package.outputs.version }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           body: |
-            ## Two packages — pick by OS
+            ## CentOS 7-compatible Linux package
 
             | File | Runs on | Root |
             |------|---------|------|
-            | `bwa-mem2-${{ github.ref_name }}_centos7_x64-linux.tar.bz2` | **CentOS 7 / RHEL 7+** (glibc 2.17) | GCC multi |
-            | `bwa-mem2-${{ github.ref_name }}_intel_x64-linux.tar.bz2` | Ubuntu 22.04+ / modern (glibc 2.33+) | Intel official |
+            | `bwa-mem2-${{ needs.package.outputs.version }}_centos7_x64-linux.tar.bz2` | **CentOS 7 / RHEL 7+** (glibc 2.17) | Official Intel + GCC fallback |
 
-            CentOS 7 users: download the **`centos7`** tarball only. The `intel`
-            package will fail with `GLIBC_2.33 not found`.
-
-            ### CentOS 7 package
-
-            Built in manylinux2014. Root `bwa-mem2` dispatches GCC ISA siblings;
-            AVX-512 without CLWB → `extra/bwa-mem2.gcc-full`.
-
-            ### Intel package
-
-            Root prefers Intel ISA siblings when CLWB is present; otherwise hands
-            off to `extra/bwa-mem2.gcc-full` (AMD / no-CLWB)
-            ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
-            [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+            The dispatcher and GCC fallback are built in manylinux2014; the
+            pinned upstream v2.2.1 Intel siblings are verified against the same
+            glibc 2.17 ceiling. AMD EPYC and Intel AVX-512 CPUs without CLWB
+            automatically use `extra/bwa-mem2.gcc-full`.
 
             ### Usage (CentOS 7 example)
 
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/bwa-mem2-${{ github.ref_name }}_centos7_x64-linux.tar.bz2 \
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.package.outputs.release_tag }}/bwa-mem2-${{ needs.package.outputs.version }}_centos7_x64-linux.tar.bz2 \
               | tar jxf -
-            bwa-mem2-${{ github.ref_name }}_centos7_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
-            bwa-mem2-${{ github.ref_name }}_centos7_x64-linux/bwa-mem2 which
+            bwa-mem2-${{ needs.package.outputs.version }}_centos7_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
+            bwa-mem2-${{ needs.package.outputs.version }}_centos7_x64-linux/bwa-mem2 which
             ```
           files: release-assets/*.tar.bz2

@@ -1,42 +1,24 @@
 #!/usr/bin/env bash
-# Assemble one release tarball from downloaded CI artifacts under dist/bin-*.
+# Assemble the CentOS 7-compatible release tarball from CI artifacts.
 #
 # Usage:
-#   scripts/ci-package.sh <centos7|intel> <VERSION> <dist-dir> <out-dir>
+#   scripts/ci-package.sh <VERSION> <dist-dir> <out-dir>
 #
-# centos7 → bwa-mem2-${VERSION}_centos7_x64-linux.tar.bz2  (glibc 2.17)
-# intel   → bwa-mem2-${VERSION}_intel_x64-linux.tar.bz2    (glibc 2.33+, Intel root)
+# Output: bwa-mem2-${VERSION}_centos7_x64-linux.tar.bz2 (glibc 2.17)
 set -euo pipefail
 
-FLAVOR="${1:?usage: $0 <centos7|intel> <VERSION> <dist-dir> <out-dir>}"
-VERSION="${2:?}"
-DIST="${3:?}"
-OUT="${4:?}"
+VERSION="${1:?usage: $0 <VERSION> <dist-dir> <out-dir>}"
+DIST="${2:?}"
+OUT="${3:?}"
 
-case "${FLAVOR}" in
-  centos7)
-    SUFFIX="centos7_x64-linux"
-    ROOT_CANDIDATES=(bin-c7-root-gcc-multi c7-root-gcc-multi)
-    SKIP_ROOT="c7-root-gcc-multi"
-    MULTI_NAMES="gcc-full|gcc-avx2-fleet|c7-gcc-avx2-fleet"
-    PREFIX_STRIP="c7-"
-    ROOT_NOTE="super-dispatcher + GCC multi (manylinux2014 / glibc 2.17)"
-    COPY_ROOT_AS_GCC_FULL=1
-    ;;
-  intel)
-    SUFFIX="intel_x64-linux"
-    ROOT_CANDIDATES=(bin-intel-official intel-official)
-    SKIP_ROOT="intel-official"
-    MULTI_NAMES="gcc-full|gcc-avx2-fleet|intel-avx512-noclwb"
-    PREFIX_STRIP=""
-    ROOT_NOTE="super-dispatcher + Intel official ISA siblings (ubuntu-22.04 / glibc 2.33+)"
-    COPY_ROOT_AS_GCC_FULL=0
-    ;;
-  *)
-    echo "ERROR: unknown flavor '${FLAVOR}' (want centos7|intel)" >&2
-    exit 1
-    ;;
-esac
+SUFFIX="centos7_x64-linux"
+ROOT_CANDIDATES=(bin-c7-root-gcc-multi c7-root-gcc-multi)
+OFFICIAL_CANDIDATES=(bin-c7-intel-official c7-intel-official)
+SKIP_ROOT="c7-root-gcc-multi"
+SKIP_OFFICIAL="c7-intel-official"
+MULTI_NAMES="gcc-full|gcc-avx2-fleet|c7-gcc-avx2-fleet"
+PREFIX_STRIP="c7-"
+ROOT_NOTE="super-dispatcher + upstream v2.2.1 Intel ISA siblings + GCC fallback"
 
 PKG="bwa-mem2-${VERSION}_${SUFFIX}"
 mkdir -p "${OUT}/${PKG}/extra"
@@ -52,31 +34,37 @@ for d in "${ROOT_CANDIDATES[@]}"; do
 done
 test -n "${ROOT_SRC}"
 test -f "${ROOT_SRC}/bwa-mem2"
-cp -a "${ROOT_SRC}"/. "${OUT}/${PKG}/"
-mv "${OUT}/${PKG}/BUILD_INFO.txt" "${OUT}/${PKG}/BUILD_INFO.root.txt" 2>/dev/null || true
 
-if [[ "${COPY_ROOT_AS_GCC_FULL}" -eq 1 ]]; then
-  cp -a "${ROOT_SRC}/bwa-mem2" "${OUT}/${PKG}/extra/bwa-mem2.gcc-full"
-  for isa in sse41 sse42 avx avx2 avx512bw; do
-    if [[ -e "${ROOT_SRC}/bwa-mem2.${isa}" ]]; then
-      cp -a "${ROOT_SRC}/bwa-mem2.${isa}" "${OUT}/${PKG}/extra/bwa-mem2.gcc-full.${isa}"
-    fi
-  done
-  cp -a "${OUT}/${PKG}/BUILD_INFO.root.txt" "${OUT}/${PKG}/extra/BUILD_INFO.gcc-full.txt" 2>/dev/null || true
-fi
+OFFICIAL_SRC=""
+for d in "${OFFICIAL_CANDIDATES[@]}"; do
+  if [[ -d "${DIST}/${d}" ]]; then OFFICIAL_SRC="${DIST}/${d}"; break; fi
+done
+test -n "${OFFICIAL_SRC}"
+
+# The root dispatcher is built in manylinux2014 from this repository. Its ISA
+# siblings are the pinned upstream binaries; unsafe CPUs hand off to gcc-full.
+cp -a "${ROOT_SRC}/bwa-mem2" "${OUT}/${PKG}/bwa-mem2"
+cp -a "${ROOT_SRC}/BUILD_INFO.txt" "${OUT}/${PKG}/BUILD_INFO.dispatcher.txt" 2>/dev/null || true
+for isa in sse41 sse42 avx avx2 avx512bw; do
+  test -f "${OFFICIAL_SRC}/bwa-mem2.${isa}"
+  cp -a "${OFFICIAL_SRC}/bwa-mem2.${isa}" "${OUT}/${PKG}/"
+done
+cp -a "${OFFICIAL_SRC}/BUILD_INFO.txt" "${OUT}/${PKG}/BUILD_INFO.official.txt" 2>/dev/null || true
+
+cp -a "${ROOT_SRC}/bwa-mem2" "${OUT}/${PKG}/extra/bwa-mem2.gcc-full"
+for isa in sse41 sse42 avx avx2 avx512bw; do
+  test -f "${ROOT_SRC}/bwa-mem2.${isa}"
+  cp -a "${ROOT_SRC}/bwa-mem2.${isa}" "${OUT}/${PKG}/extra/bwa-mem2.gcc-full.${isa}"
+done
+cp -a "${ROOT_SRC}/BUILD_INFO.txt" "${OUT}/${PKG}/extra/BUILD_INFO.gcc-full.txt" 2>/dev/null || true
 
 for dir in "${DIST}"/bin-*; do
   [[ -d "$dir" ]] || continue
   name="${dir#${DIST}/bin-}"
 
-  # Keep flavors isolated when both artifact trees share one dist/.
-  if [[ "${FLAVOR}" == "centos7" ]]; then
-    [[ "$name" == c7-* ]] || continue
-  else
-    [[ "$name" == c7-* ]] && continue
-  fi
+  [[ "$name" == c7-* ]] || continue
 
-  if [[ "$name" == "${SKIP_ROOT}" ]]; then
+  if [[ "$name" == "${SKIP_ROOT}" || "$name" == "${SKIP_OFFICIAL}" ]]; then
     continue
   fi
 
@@ -129,25 +117,20 @@ for dir in "${DIST}"/bin-*; do
 done
 
 cp -a scripts/select-binary.sh README.md LICENSE "${OUT}/${PKG}/"
-if [[ "${FLAVOR}" == "centos7" ]]; then
-  cp -a scripts/extra-README.centos7.md "${OUT}/${PKG}/extra/README.md" 2>/dev/null \
-    || cp -a scripts/extra-README.md "${OUT}/${PKG}/extra/README.md"
-else
-  cp -a scripts/extra-README.intel.md "${OUT}/${PKG}/extra/README.md" 2>/dev/null \
-    || cp -a scripts/extra-README.md "${OUT}/${PKG}/extra/README.md"
-fi
+cp -a scripts/extra-README.centos7.md "${OUT}/${PKG}/extra/README.md" 2>/dev/null \
+  || cp -a scripts/extra-README.md "${OUT}/${PKG}/extra/README.md"
 chmod +x "${OUT}/${PKG}"/bwa-mem2* "${OUT}/${PKG}/select-binary.sh" 2>/dev/null || true
 chmod +x "${OUT}/${PKG}/extra"/bwa-mem2* 2>/dev/null || true
 
 {
   echo "layout=single-tarball-flat-extra"
-  echo "flavor=${FLAVOR}"
+  echo "flavor=centos7"
   echo "root=${ROOT_NOTE}"
   echo "extra=flat files under extra/ (see extra/README.md)"
   echo "note=Inspect: ./bwa-mem2 which"
 } > "${OUT}/${PKG}/BUILD_INFO.txt"
 
-echo "Package tree (${FLAVOR}):"
+echo "Package tree (centos7):"
 find "${OUT}/${PKG}" -maxdepth 2 -type f | sort
 tar -C "${OUT}" -cjf "${OUT}/${PKG}.tar.bz2" "${PKG}"
 ls -lh "${OUT}/${PKG}.tar.bz2"

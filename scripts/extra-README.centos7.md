@@ -1,10 +1,12 @@
 # Extra builds (flat) — CentOS 7 / glibc 2.17 package
 
-This tarball was built in **manylinux2014 (glibc 2.17)** and runs on
-**CentOS 7 / RHEL 7** and newer.
+The dispatcher and GCC fallbacks were built in **manylinux2014 (glibc 2.17)**;
+the pinned upstream binaries are verified against the same glibc ceiling.
+The complete package runs on **CentOS 7 / RHEL 7** and newer.
 
-Root `../bwa-mem2` is a **super-dispatcher** over GCC ISA siblings. With AVX-512
-but no CLWB it hands off to `bwa-mem2.gcc-full` here. Prefer `../bwa-mem2`.
+Root `../bwa-mem2` is a **super-dispatcher** over the upstream v2.2.1
+Intel-optimized ISA siblings. It hands AMD EPYC and Intel AVX-512 CPUs without
+CLWB to `bwa-mem2.gcc-full` here. Prefer `../bwa-mem2`.
 
 | File | Role |
 |------|------|

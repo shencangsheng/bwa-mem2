@@ -104,6 +104,18 @@ static int x86_has_clwb(void)
 	return (cpuid[1] >> 24) & 1;
 }
 
+static int x86_is_intel(void)
+{
+	int cpuid[4];
+	char vendor[13];
+	__cpuidex(cpuid, 0, 0);
+	memcpy(vendor, &cpuid[1], 4);
+	memcpy(vendor + 4, &cpuid[3], 4);
+	memcpy(vendor + 8, &cpuid[2], 4);
+	vendor[12] = 0;
+	return strcmp(vendor, "GenuineIntel") == 0;
+}
+
 static int exe_path(const char *exe, int max, char buf[], int *base_st)
 {
 	int i, len, last_slash, ret = 0;
@@ -204,10 +216,13 @@ static int try_extra_binary(const char *prefix, const char *name, char *out)
 	return 0;
 }
 
-/* Intel -xCORE-AVX512 path is unsafe when CPU advertises AVX512BW but lacks CLWB. */
-static int needs_portable_avx512(int simd, int has_clwb)
+/* Official binaries use the Intel compiler runtime. Keep AMD on the GCC path,
+ * and avoid Intel -xCORE-AVX512 when AVX512BW is present without CLWB. */
+static const char *portable_handoff_reason(int simd, int is_intel, int has_clwb)
 {
-	return (simd & SIMD_AVX512BW) && !has_clwb;
+	if (!is_intel) return "non-Intel CPU";
+	if ((simd & SIMD_AVX512BW) && !has_clwb) return "AVX512 without CLWB";
+	return NULL;
 }
 
 /* Prefer highest ISA available on this CPU that also has a shipped binary.
@@ -289,7 +304,8 @@ static void test_and_launch(char *argv[], char *prefix, const char *simd)
 int main(int argc, char *argv[])
 {
 	char buf[PATH_MAX], handoff[PATH_MAX], *prefix, *argv0 = argv[0];
-	int ret, base_st, simd, has_clwb, allow_avx512;
+	int ret, base_st, simd, is_intel, has_clwb, allow_avx512;
+	const char *handoff_reason;
 	int show_which = (argc >= 2 &&
 		(strcmp(argv[1], "which") == 0 || strcmp(argv[1], "--which") == 0));
 
@@ -305,32 +321,44 @@ int main(int argc, char *argv[])
 	strcpy_s(prefix, PATH_MAX, buf);
 	strcat_s(prefix, PATH_MAX, &argv0[base_st]);
 	simd = x86_simd();
+	is_intel = x86_is_intel();
 	has_clwb = x86_has_clwb();
 	/* Root Intel .avx512bw needs CLWB; GCC multi / other names do not. */
 	allow_avx512 = has_clwb || !is_root_dispatcher(prefix);
+	handoff_reason = portable_handoff_reason(simd, is_intel, has_clwb);
 
-	/* Super-dispatcher: root bwa-mem2 hands off when Intel AVX-512 siblings
-	 * would hit the CLWB gate (AMD Zen4, some cloud VMs). Nested dispatchers
-	 * (e.g. extra/bwa-mem2.gcc-full) skip this and only do ISA selection. */
-	if (is_root_dispatcher(prefix) && needs_portable_avx512(simd, has_clwb)) {
+	/* Super-dispatcher: root bwa-mem2 keeps Intel-compatible hosts on the
+	 * official siblings and hands AMD / no-CLWB AVX-512 hosts to GCC.
+	 * Nested dispatchers skip this and only do ISA selection. */
+	if (is_root_dispatcher(prefix) && handoff_reason != NULL) {
 		const char *portable = select_portable_handoff(prefix, handoff);
 		if (portable != NULL) {
 			if (show_which) {
 				printf("binary: %s\n", handoff);
 				printf("platform: %s\n", portable);
-				printf("dispatch: portable (avx512 without CLWB)\n");
+				printf("dispatch: portable (%s)\n", handoff_reason);
 				print_cpu_simd(simd);
-				printf("cpu_clwb: no\n");
+				printf("cpu_vendor: %s\n", is_intel ? "intel" : "non-intel");
+				printf("cpu_clwb: %s\n", has_clwb ? "yes" : "no");
 				free(prefix);
 				return 0;
 			}
-			fprintf(stderr, "AVX512 without CLWB: handing off to portable build \"%s\"\n",
-				handoff);
+			fprintf(stderr, "%s: handing off to portable build \"%s\"\n",
+				handoff_reason, handoff);
 			launch_path(argv, handoff);
-			/* exec failed — fall through to root ISA cascade without avx512 */
+			/* exec failed — never run Intel-only siblings on a non-Intel CPU. */
+			if (!is_intel) {
+				free(prefix);
+				return 2;
+			}
+			/* Intel without CLWB can still fall through to an official AVX2 sibling. */
 		} else {
-			fprintf(stderr, "WARNING: AVX512 without CLWB and no extra/ portable build; "
-				"skipping root .avx512bw\n");
+			fprintf(stderr, "WARNING: %s and no extra/ portable build\n",
+				handoff_reason);
+			if (!is_intel) {
+				free(prefix);
+				return 2;
+			}
 		}
 	}
 
@@ -344,6 +372,7 @@ int main(int argc, char *argv[])
 		printf("binary: %s\n", prefix);
 		printf("platform: %s\n", platform);
 		print_cpu_simd(simd);
+		printf("cpu_vendor: %s\n", is_intel ? "intel" : "non-intel");
 		printf("cpu_clwb: %s\n", has_clwb ? "yes" : "no");
 		free(prefix);
 		return 0;

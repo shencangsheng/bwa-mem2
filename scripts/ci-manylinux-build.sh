@@ -2,8 +2,8 @@
 # Build one PLATFORM inside quay.io/pypa/manylinux2014_x86_64 (glibc 2.17).
 # Invoked from the host runner via: docker run -v "$PWD":/src -w /src ... bash scripts/ci-manylinux-build.sh
 #
-# CentOS 7 ships glibc 2.17; binaries from ubuntu-22.04 need GLIBC_2.33+ and fail
-# with: version `GLIBC_2.33' not found.
+# CentOS 7 ships glibc 2.17, so every locally built fallback is compiled and
+# checked in manylinux2014 instead of inheriting the GitHub runner's glibc.
 set -euo pipefail
 
 PLATFORM="${1:?usage: $0 <PLATFORM>}"
@@ -84,7 +84,7 @@ done
   echo "artifact=${ARTIFACT}"
   echo "container=quay.io/pypa/manylinux2014_x86_64"
   echo "glibc_target=2.17"
-  echo "note=CentOS 7 / RHEL 7 portable (Intel oneAPI skipped: modern icx needs newer glibc)"
+  echo "note=CentOS 7 / RHEL 7 portable GCC fallback for upstream Intel binaries"
   g++ --version | first_line
   ldd --version | first_line
 } > "${STAGE}/BUILD_INFO.txt"
