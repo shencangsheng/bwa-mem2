@@ -57,7 +57,10 @@ typedef struct checkpoint_occ_scalar
     uint64_t one_hot_bwt_str[4];
 }CP_OCC;
 
-#if defined(__clang__) || defined(__GNUC__)
+/* Fallback popcount for GCC/Clang. Skip when the compiler already provides
+ * _mm_countbits_64 (e.g. Intel oneAPI 2026+ / Clang popcntintrin.h defines it
+ * as a macro around _mm_popcnt_u64 — redefining it here is a hard error). */
+#if (defined(__clang__) || defined(__GNUC__)) && !defined(_mm_countbits_64)
 static inline int _mm_countbits_64(unsigned long x) {
     return __builtin_popcountl(x);
 }
