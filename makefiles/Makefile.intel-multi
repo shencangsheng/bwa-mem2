@@ -17,4 +17,4 @@ all:
 	  exit 1; \
 	}
 	$(MAKE) -C $(ROOT_DIR) -f Makefile multi \
-		CXX=$(CXX) CC=$(CC) CXXFLAGS='$(INTEL_CXXFLAGS)'
+		CXX=$(CXX) CC=$(CC) MAKEFILES='$(INTEL_FLAGS_MK)'

@@ -14,5 +14,5 @@ all:
 	$(call clean_objs)
 	$(MAKE) -C $(ROOT_DIR) -f Makefile \
 		arch='-march=skylake-avx512' EXE=bwa-mem2.avx512bw \
-		CXX=$(CXX) CC=$(CC) CXXFLAGS='$(INTEL_CXXFLAGS)' all
+		CXX=$(CXX) CC=$(CC) MAKEFILES='$(INTEL_FLAGS_MK)' all
 	cp -f $(ROOT_DIR)/bwa-mem2.avx512bw $(ROOT_DIR)/bwa-mem2

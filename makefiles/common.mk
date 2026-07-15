@@ -9,9 +9,9 @@ CC  ?= gcc
 # Static-link libgcc/libstdc++ for ECS image portability (upstream: portable=1)
 PORTABLE ?= 1
 
-# oneAPI icpx (LLVM) defaults to C++17; ksort.h still uses the removed
-# `register` keyword. Keep this out of the upstream Makefile.
-INTEL_CXXFLAGS ?= -Wno-register
+# Appended via MAKEFILES (see intel-flags.mk) — never pass CXXFLAGS= to
+# upstream make, or ARCH_FLAGS from CXXFLAGS+= are lost.
+INTEL_FLAGS_MK := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/intel-flags.mk)
 
 SAFE_INC := -I$(ROOT_DIR)/ext/safestringlib/include
 SAFE_LIB := -L$(ROOT_DIR)/ext/safestringlib -lsafestring
