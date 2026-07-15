@@ -2,18 +2,19 @@
 # Requires Intel CPU with CLWB for the AVX-512 binary — often fails on
 # AMD and some cloud VMs (#160, #236). Prefer gcc-* platforms for those ECS.
 #
-# Modern oneAPI ships icpx/icx; CI may symlink icpc->icpx and icc->icx so the
-# upstream Makefile's `ifeq ($(CXX), icpc)` branch (and -xCORE-AVX512) still runs.
+# Modern oneAPI ships icpx/icx; CI may symlink icpc->icpx so the upstream
+# Makefile's `ifeq ($(CXX), icpc)` branch (and -xCORE-AVX512) still runs.
+# Keep CC=gcc: safestringlib is C and fails under icx (missing abort decl).
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
 # override: Makefile.platforms may pass CXX=g++ on the command line
 override CXX := icpc
-override CC  := icc
+override CC  := gcc
 
 .PHONY: all
 all:
 	@command -v $(CXX) >/dev/null || { \
-	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc/icc are on PATH."; \
+	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc is on PATH."; \
 	  exit 1; \
 	}
 	$(MAKE) -C $(ROOT_DIR) -f Makefile multi \

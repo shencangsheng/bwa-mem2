@@ -1,14 +1,15 @@
 # Intel icpc AVX-512 without CLWB: pass -march=skylake-avx512 through
 # upstream's custom arch= path (avoids -xCORE-AVX512 CPUID gate).
+# CC=gcc: safestringlib is C and fails under modern icx.
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
 override CXX := icpc
-override CC  := icc
+override CC  := gcc
 
 .PHONY: all
 all:
 	@command -v $(CXX) >/dev/null || { \
-	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc/icc are on PATH."; \
+	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc is on PATH."; \
 	  exit 1; \
 	}
 	$(call clean_objs)
