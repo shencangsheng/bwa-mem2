@@ -16,7 +16,7 @@
 #   gcc-avx                  AVX hosts
 #   gcc-avx2-bin             Single AVX2 binary (pin one ISA per ECS image)
 #   gcc-avx512bw             Single AVX-512BW (Intel no-CLWB / AMD Zen4+)
-#   intel-multi              Upstream icpc multi (needs CLWB + Intel CPU)
+#   intel-multi              Upstream icpc multi (CI artifact: intel-official; needs CLWB + Intel CPU)
 #   intel-avx512-noclwb      icpc AVX-512 via -march=skylake-avx512 (no CLWB)
 
 PLATFORM ?= gcc-multi

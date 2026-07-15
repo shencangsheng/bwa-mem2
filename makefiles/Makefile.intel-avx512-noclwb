@@ -2,11 +2,15 @@
 # upstream's custom arch= path (avoids -xCORE-AVX512 CPUID gate).
 include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
 
-CXX := icpc
-CC  := icc
+override CXX := icpc
+override CC  := icc
 
 .PHONY: all
 all:
+	@command -v $(CXX) >/dev/null || { \
+	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc/icc are on PATH."; \
+	  exit 1; \
+	}
 	$(call clean_objs)
 	$(MAKE) -C $(ROOT_DIR) -f Makefile \
 		arch='-march=skylake-avx512' EXE=bwa-mem2.avx512bw \

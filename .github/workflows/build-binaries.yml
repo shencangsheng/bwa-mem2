@@ -37,8 +37,14 @@ jobs:
         include:
           - platform: gcc-multi
             artifact: gcc-full
+            compiler: gcc
           - platform: gcc-avx2
             artifact: gcc-avx2-fleet
+            compiler: gcc
+          # Official-style: make CXX=icpc multi (AVX-512 uses -xCORE-AVX512 / CLWB)
+          - platform: intel-multi
+            artifact: intel-official
+            compiler: intel
     steps:
       - name: Checkout (with safestringlib submodule)
         uses: actions/checkout@v4
@@ -49,10 +55,52 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential zlib1g-dev
+            build-essential zlib1g-dev curl ca-certificates gnupg
+
+      - name: Install Intel oneAPI C++ (official icpc multi)
+        if: matrix.compiler == 'intel'
+        run: |
+          curl -sS -L https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            intel-oneapi-compiler-dpcpp-cpp
+
+          # Upstream Makefile keys off CXX=icpc for -xCORE-AVX512; oneAPI ships icpx/icx.
+          set +e
+          # shellcheck disable=SC1091
+          source /opt/intel/oneapi/setvars.sh
+          set -e
+
+          ICPX="$(command -v icpx || true)"
+          ICX="$(command -v icx || true)"
+          if [[ -z "${ICPX}" || -z "${ICX}" ]]; then
+            for d in /opt/intel/oneapi/compiler/*/bin/compiler /opt/intel/oneapi/compiler/*/bin; do
+              [[ -x "${d}/icpx" ]] && ICPX="${d}/icpx"
+              [[ -x "${d}/icx" ]] && ICX="${d}/icx"
+            done
+          fi
+          test -n "${ICPX}" && test -n "${ICX}"
+          sudo ln -sfn "${ICPX}" /usr/local/bin/icpc
+          sudo ln -sfn "${ICX}" /usr/local/bin/icc
+          # Drivers + libs for later steps (Build also re-sources setvars.sh)
+          echo "/usr/local/bin" >> "${GITHUB_PATH}"
+          dirname "${ICPX}" >> "${GITHUB_PATH}"
+          dirname "${ICX}" >> "${GITHUB_PATH}"
+          icpc --version
+          icc --version
 
       - name: Build PLATFORM=${{ matrix.platform }}
         run: |
+          if [[ "${{ matrix.compiler }}" == "intel" ]]; then
+            if [[ -f /opt/intel/oneapi/setvars.sh ]]; then
+              # shellcheck disable=SC1091
+              source /opt/intel/oneapi/setvars.sh
+            fi
+          fi
           make -f Makefile.platforms PLATFORM="${{ matrix.platform }}"
           ls -lh bwa-mem2 bwa-mem2.* || true
           file bwa-mem2 bwa-mem2.* || true
@@ -66,16 +114,19 @@ jobs:
           esac
           PKG="bwa-mem2-${VERSION}_${{ matrix.artifact }}_x64-linux"
           mkdir -p "${PKG}"
-          cp -a bwa-mem2 bwa-mem2.* \
-                scripts/select-binary.sh README.md LICENSE \
-                "${PKG}/" 2>/dev/null || true
-          # ensure named ISA binaries are present when built
           for b in bwa-mem2 bwa-mem2.sse41 bwa-mem2.sse42 bwa-mem2.avx \
                    bwa-mem2.avx2 bwa-mem2.avx512bw; do
             [[ -e "$b" ]] && cp -a "$b" "${PKG}/"
           done
           cp -a scripts/select-binary.sh README.md LICENSE "${PKG}/"
           chmod +x "${PKG}"/bwa-mem2* "${PKG}/select-binary.sh" 2>/dev/null || true
+          {
+            echo "platform=${{ matrix.platform }}"
+            echo "compiler=${{ matrix.compiler }}"
+            echo "artifact=${{ matrix.artifact }}"
+            if command -v icpc >/dev/null 2>&1; then icpc --version | head -n1; fi
+            if command -v g++ >/dev/null 2>&1; then g++ --version | head -n1; fi
+          } > "${PKG}/BUILD_INFO.txt"
           tar -cjf "${PKG}.tar.bz2" "${PKG}"
           echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
 
@@ -124,7 +175,6 @@ jobs:
             v*) ;;
             *) VERSION="sha-${GITHUB_SHA::8}" ;;
           esac
-          # strip gcc- prefix for artifact name
           ISA="${{ matrix.platform }}"
           ISA="${ISA#gcc-}"
           ISA="${ISA%-bin}"
@@ -172,24 +222,24 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           body: |
-            ## Multi-ISA Linux x86_64 (GCC via `Makefile.platforms`)
+            ## Multi-ISA Linux x86_64 (`Makefile.platforms`)
 
-            Upstream `Makefile` unchanged. Builds use:
+            Upstream `Makefile` unchanged:
             ```bash
             make -f Makefile.platforms PLATFORM=<name>
             ```
 
-            GCC builds avoid Intel `icpc -xCORE-AVX512` CLWB / vendor CPUID gates
-            ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
-            [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+            ### Bundles
 
-            | Package / PLATFORM | ECS use |
-            |--------------------|---------|
-            | `gcc-full` / `gcc-multi` | Full set + dispatcher |
-            | `gcc-avx2-fleet` / `gcc-avx2` | AMD Zen1–Zen3 / Intel AVX2 |
-            | `sse41` | Max compatibility |
-            | `avx2` / `gcc-avx2-bin` | Pin AVX2 per image |
-            | `avx512bw` | Intel no-CLWB / AMD Zen4+ |
+            | Package / PLATFORM | Toolchain | Notes |
+            |--------------------|-----------|-------|
+            | `gcc-full` / `gcc-multi` | GCC | Full set + dispatcher; no CLWB gate |
+            | `gcc-avx2-fleet` / `gcc-avx2` | GCC | Up to AVX2 (AMD Zen1–Zen3 / Intel AVX2) |
+            | `intel-official` / `intel-multi` | Intel oneAPI (`icpc`→`icpx`) | Same as upstream `make CXX=icpc multi`; AVX-512 needs CLWB + Intel CPU ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160), [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)) |
+
+            ### Single-ISA (GCC)
+
+            `sse41` / `sse42` / `avx` / `avx2` / `avx512bw` — pin one binary per ECS image.
 
             ```bash
             ./bwa-mem2.avx2 mem ...
