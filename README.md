@@ -16,26 +16,23 @@
 
 ## Getting Started
 ```sh
-# Use precompiled binaries (recommended) — one tarball, auto CPU dispatch
+# Use precompiled binaries (recommended) — pick the tarball for your OS
 # Replace VERSION with a release tag, e.g. v2.3.8
-curl -L https://github.com/shencangsheng/bwa-mem2/releases/download/VERSION/bwa-mem2-VERSION_x64-linux.tar.bz2 \
+#
+# CentOS 7 / RHEL 7 (glibc 2.17):
+curl -L https://github.com/shencangsheng/bwa-mem2/releases/download/VERSION/bwa-mem2-VERSION_centos7_x64-linux.tar.bz2 \
   | tar jxf -
-# One entry: root bwa-mem2 auto-picks Intel siblings or extra/gcc-full (no CLWB / AMD)
-bwa-mem2-VERSION_x64-linux/bwa-mem2 index ref.fa
-bwa-mem2-VERSION_x64-linux/bwa-mem2 mem ref.fa read1.fq read2.fq > out.sam
+bwa-mem2-VERSION_centos7_x64-linux/bwa-mem2 mem ref.fa read1.fq read2.fq > out.sam
+#
+# Ubuntu 22.04+ / modern hosts (glibc 2.33+, Intel root):
+#   bwa-mem2-VERSION_intel_x64-linux.tar.bz2
+#
 # Inspect selection: ./bwa-mem2 which
 
-# Compile from source (not recommended for general users)
-# Get the source
+# Compile from source (e.g. on CentOS 7 if you cannot use the release tarball)
+# yum install -y gcc gcc-c++ make zlib-devel git
 git clone --recursive https://github.com/shencangsheng/bwa-mem2
 cd bwa-mem2
-# Or
-git clone https://github.com/shencangsheng/bwa-mem2
-cd bwa-mem2
-git submodule init
-git submodule update
-# Default (AMD-friendly GCC multi): make -f Makefile.platforms
-# Upstream-style Intel multi (release root siblings): PLATFORM=intel-multi
 make -f Makefile.platforms PLATFORM=gcc-multi
 ./bwa-mem2
 ```
@@ -53,29 +50,35 @@ bwa-mem2 is distributed under the MIT license.
 ## Installation
 
 For general users, it is recommended to use the precompiled binaries from the
-[release page][rel]. Each release ships **one** `bwa-mem2-<tag>_x64-linux.tar.bz2`:
+[release page][rel]. Each release ships **two** tarballs:
+
+| File | OS / glibc | Root |
+|------|------------|------|
+| `bwa-mem2-<tag>_centos7_x64-linux.tar.bz2` | CentOS 7 / RHEL 7+ (glibc 2.17) | GCC multi |
+| `bwa-mem2-<tag>_intel_x64-linux.tar.bz2` | Ubuntu 22.04+ (glibc 2.33+) | Intel official |
+
+**CentOS 7:** use only the `centos7` package. The `intel` package fails with
+`GLIBC_2.33 not found`.
 
 ```
-bwa-mem2-<tag>_x64-linux/
-  bwa-mem2                        # super-dispatcher (CPUID + CLWB → exec)
-  bwa-mem2.sse41 … .avx512bw      # Intel official ISA siblings
+bwa-mem2-<tag>_centos7_x64-linux/     # or *_intel_x64-linux/
+  bwa-mem2                        # super-dispatcher
+  bwa-mem2.sse41 … .avx512bw      # ISA siblings (GCC or Intel, by package)
   extra/                          # flat (no nested dirs)
-    bwa-mem2.gcc-full             # GCC multi (+ .gcc-full.<isa> siblings)
+    bwa-mem2.gcc-full             # handoff / portable multi
     bwa-mem2.gcc-avx2-fleet
-    bwa-mem2.intel-avx512-noclwb
+    bwa-mem2.intel-avx512-noclwb  # intel package only
     bwa-mem2.sse41 … bwa-mem2.avx512bw
 ```
 
-- **Root `bwa-mem2`** is a super-dispatcher: with CLWB it launches Intel ISA siblings;
-  without CLWB but with AVX-512 it hands off to `extra/bwa-mem2.gcc-full` (then
-  `intel-avx512-noclwb`) so AMD / cloud hosts keep working
-  ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
+- **Root `bwa-mem2`** picks the best ISA sibling; without CLWB but with AVX-512 it
+  hands off to `extra/bwa-mem2.gcc-full` ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
   [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
 - **`extra/`** holds portable / pinned builds; you normally do not call them by hand.
 
 ```sh
-make -f Makefile.platforms PLATFORM=intel-multi   # Intel siblings (release root)
-make -f Makefile.platforms PLATFORM=gcc-multi     # → packaged as extra/bwa-mem2.gcc-full
+make -f Makefile.platforms PLATFORM=gcc-multi     # CentOS 7–style multi
+make -f Makefile.platforms PLATFORM=intel-multi   # needs local Intel oneAPI (icpc)
 ./bwa-mem2 which                                  # print selected binary / platform
 ```
 

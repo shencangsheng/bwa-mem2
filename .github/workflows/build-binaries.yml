@@ -1,15 +1,17 @@
-# Build all PLATFORM variants, then ship ONE tar.bz2:
+# Ship TWO tar.bz2 files per release:
 #
-#   <pkg>/
-#     bwa-mem2*                      # root = super-dispatcher + intel-official ISA siblings
-#     extra/bwa-mem2.<artifact>[.<isa>]   # flat; gcc-full = portable handoff target
+#   bwa-mem2-<ver>_centos7_x64-linux.tar.bz2
+#     manylinux2014 / glibc 2.17 — CentOS 7 / RHEL 7+
+#     root = GCC multi + super-dispatcher
 #
-#   Root runsimd: CLWB → Intel siblings; AVX512 without CLWB → extra/gcc-full.
-#   make -f Makefile.platforms PLATFORM=<name>
+#   bwa-mem2-<ver>_intel_x64-linux.tar.bz2
+#     ubuntu-22.04 / glibc 2.33+ — modern hosts only
+#     root = Intel official ISA siblings + super-dispatcher
+#     extra/gcc-full = handoff for no-CLWB / AMD (#160, #236)
 #
-# See Makefile.platforms and issues:
-#   https://github.com/bwa-mem2/bwa-mem2/issues/160  (CLWB)
-#   https://github.com/bwa-mem2/bwa-mem2/issues/236  (AMD Zen4 / Intel -x)
+# See Makefile.platforms and:
+#   https://github.com/bwa-mem2/bwa-mem2/issues/160
+#   https://github.com/bwa-mem2/bwa-mem2/issues/236
 
 name: Build multi-ISA binaries
 
@@ -27,19 +29,98 @@ on:
 permissions:
   contents: write
 
+env:
+  MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64
+
 jobs:
-  build-bundle:
-    name: Bundle ${{ matrix.platform }}
+  # ── CentOS 7 / glibc 2.17 (manylinux2014) ─────────────────────────────
+  build-centos7-bundle:
+    name: C7 Bundle ${{ matrix.artifact }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Root ISA siblings + super-dispatcher (enhanced runsimd from this build)
+          - platform: gcc-multi
+            artifact: c7-root-gcc-multi
+          - platform: gcc-avx2
+            artifact: c7-gcc-avx2-fleet
+    steps:
+      - name: Checkout (with safestringlib submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build in manylinux2014
+        run: |
+          chmod +x scripts/ci-manylinux-build.sh
+          docker run --rm \
+            -v "$PWD":/src \
+            -w /src \
+            "${MANYLINUX_IMAGE}" \
+            bash scripts/ci-manylinux-build.sh \
+              "${{ matrix.platform }}" \
+              "${{ matrix.artifact }}"
+
+      - name: Upload staged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.artifact }}
+          path: stage/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  build-centos7-single:
+    name: C7 Single ${{ matrix.artifact }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: gcc-sse41
+            artifact: c7-sse41
+          - platform: gcc-sse42
+            artifact: c7-sse42
+          - platform: gcc-avx
+            artifact: c7-avx
+          - platform: gcc-avx2-bin
+            artifact: c7-avx2
+          - platform: gcc-avx512bw
+            artifact: c7-avx512bw
+    steps:
+      - name: Checkout (with safestringlib submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build in manylinux2014
+        run: |
+          chmod +x scripts/ci-manylinux-build.sh
+          docker run --rm \
+            -v "$PWD":/src \
+            -w /src \
+            "${MANYLINUX_IMAGE}" \
+            bash scripts/ci-manylinux-build.sh \
+              "${{ matrix.platform }}" \
+              "${{ matrix.artifact }}"
+
+      - name: Upload staged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.artifact }}
+          path: stage/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  # ── Intel / modern glibc (ubuntu-22.04 host) ──────────────────────────
+  build-intel-bundle:
+    name: Intel Bundle ${{ matrix.artifact }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - platform: intel-multi
             artifact: intel-official
             compiler: intel
-          # Portable handoff target for AVX512 without CLWB
           - platform: gcc-multi
             artifact: gcc-full
             compiler: gcc
@@ -61,7 +142,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential zlib1g-dev curl ca-certificates gnupg
 
-      - name: Install Intel oneAPI C++ (official icpc multi)
+      - name: Install Intel oneAPI C++
         if: matrix.compiler == 'intel'
         run: |
           curl -sS -L https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
@@ -73,7 +154,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             intel-oneapi-compiler-dpcpp-cpp
 
-          # Upstream Makefile keys off CXX=icpc for -xCORE-AVX512; oneAPI ships icpx/icx.
           set +e
           # shellcheck disable=SC1091
           source /opt/intel/oneapi/setvars.sh
@@ -120,8 +200,12 @@ jobs:
             echo "platform=${{ matrix.platform }}"
             echo "compiler=${{ matrix.compiler }}"
             echo "artifact=${{ matrix.artifact }}"
+            echo "host=ubuntu-22.04"
+            echo "glibc_target=2.33+"
+            echo "note=Modern hosts only — will NOT run on CentOS 7"
             if command -v icpc >/dev/null 2>&1; then icpc --version | head -n1; fi
             if command -v g++ >/dev/null 2>&1; then g++ --version | head -n1; fi
+            ldd --version | head -n1
           } > "${STAGE}/BUILD_INFO.txt"
           ls -lh "${STAGE}"
 
@@ -132,8 +216,8 @@ jobs:
           path: stage/${{ matrix.artifact }}
           if-no-files-found: error
 
-  build-single:
-    name: Single ${{ matrix.artifact }}
+  build-intel-single:
+    name: Intel Single ${{ matrix.artifact }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -180,7 +264,10 @@ jobs:
             echo "platform=${{ matrix.platform }}"
             echo "compiler=gcc"
             echo "artifact=${{ matrix.artifact }}"
+            echo "host=ubuntu-22.04"
+            echo "glibc_target=2.33+"
             g++ --version | head -n1
+            ldd --version | head -n1
           } > "${STAGE}/BUILD_INFO.txt"
           ls -lh "${STAGE}"
 
@@ -191,9 +278,14 @@ jobs:
           path: stage/${{ matrix.artifact }}
           if-no-files-found: error
 
+  # ── Package both flavors ──────────────────────────────────────────────
   package:
-    name: Assemble single tar.bz2
-    needs: [build-bundle, build-single]
+    name: Assemble both tar.bz2
+    needs:
+      - build-centos7-bundle
+      - build-centos7-single
+      - build-intel-bundle
+      - build-intel-single
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout (docs / scripts)
@@ -206,112 +298,25 @@ jobs:
           pattern: bin-*
           merge-multiple: false
 
-      - name: Assemble package layout
+      - name: Assemble centos7 + intel packages
         run: |
           VERSION="${GITHUB_REF_NAME}"
           case "${VERSION}" in
             v*) ;;
             *) VERSION="sha-${GITHUB_SHA::8}" ;;
           esac
-          PKG="bwa-mem2-${VERSION}_x64-linux"
-          mkdir -p "${PKG}/extra"
-
-          echo "Downloaded artifacts:"
-          find dist -type f | sort
-
-          # upload/download-artifact does not reliably preserve +x; runsimd also
-          # requires S_IXUSR on ISA siblings before execv.
-          find dist -type f \( -name 'bwa-mem2' -o -name 'bwa-mem2.*' \) -exec chmod +x {} +
-
-          # Root = intel-official ISA siblings + super-dispatcher (runsimd)
-          ROOT_SRC=""
-          for d in dist/bin-intel-official dist/intel-official; do
-            if [[ -d "$d" ]]; then ROOT_SRC="$d"; break; fi
-          done
-          test -n "${ROOT_SRC}"
-          test -f "${ROOT_SRC}/bwa-mem2"
-          cp -a "${ROOT_SRC}"/. "${PKG}/"
-          mv "${PKG}/BUILD_INFO.txt" "${PKG}/BUILD_INFO.root.txt" 2>/dev/null || true
-
-          # Flat extra/: rename so multi dispatchers still find sibling ISA bins.
-          #   multi:  bwa-mem2.<artifact> + bwa-mem2.<artifact>.<isa>
-          #   single: bwa-mem2.<artifact>
-          #
-          # Single-ISA jobs also stage bwa-mem2 + bwa-mem2.<isa>; that is NOT a
-          # multi bundle. Only known multi/fleet artifacts keep prefixed siblings.
-          for dir in dist/bin-*; do
-            [[ -d "$dir" ]] || continue
-            name="${dir#dist/bin-}"
-            if [[ "$name" == "intel-official" ]]; then
-              continue
-            fi
-
-            if [[ -f "${dir}/BUILD_INFO.txt" ]]; then
-              cp -a "${dir}/BUILD_INFO.txt" "${PKG}/extra/BUILD_INFO.${name}.txt"
-            fi
-
-            isa_count=0
-            for isa in sse41 sse42 avx avx2 avx512bw; do
-              if [[ -e "${dir}/bwa-mem2.${isa}" ]]; then
-                isa_count=$((isa_count + 1))
-              fi
-            done
-
-            is_multi=0
-            case "$name" in
-              gcc-full|gcc-avx2-fleet|intel-avx512-noclwb) is_multi=1 ;;
-            esac
-            if [[ "${isa_count}" -ge 2 ]]; then
-              is_multi=1
-            fi
-
-            if [[ "${is_multi}" -eq 1 && -e "${dir}/bwa-mem2" ]]; then
-              # Multi bundle: keep dispatcher + prefixed ISA siblings
-              cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
-              for isa in sse41 sse42 avx avx2 avx512bw; do
-                if [[ -e "${dir}/bwa-mem2.${isa}" ]]; then
-                  cp -a "${dir}/bwa-mem2.${isa}" "${PKG}/extra/bwa-mem2.${name}.${isa}"
-                fi
-              done
-            else
-              # Single-ISA pin
-              if [[ -e "${dir}/bwa-mem2" ]]; then
-                cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
-              elif [[ -e "${dir}/bwa-mem2.avx512bw" ]]; then
-                cp -a "${dir}/bwa-mem2.avx512bw" "${PKG}/extra/bwa-mem2.${name}"
-              else
-                echo "ERROR: no binary in ${dir}" >&2
-                ls -la "${dir}" >&2 || true
-                exit 1
-              fi
-            fi
-          done
-
-          cp -a scripts/select-binary.sh README.md LICENSE "${PKG}/"
-          cp -a scripts/extra-README.md "${PKG}/extra/README.md"
-          chmod +x "${PKG}"/bwa-mem2* "${PKG}/select-binary.sh" 2>/dev/null || true
-          chmod +x "${PKG}/extra"/bwa-mem2* 2>/dev/null || true
-
-          {
-            echo "layout=single-tarball-flat-extra"
-            echo "root=super-dispatcher + intel-official ISA siblings"
-            echo "extra=flat files under extra/ (see extra/README.md)"
-            echo "note=Root bwa-mem2: CLWB → Intel siblings; AVX512 without CLWB → extra/gcc-full."
-            echo "note=Inspect: ./bwa-mem2 which"
-          } > "${PKG}/BUILD_INFO.txt"
-
-          echo "Package tree:"
-          find "${PKG}" -maxdepth 2 -type f | sort
-          tar -cjf "${PKG}.tar.bz2" "${PKG}"
-          ls -lh "${PKG}.tar.bz2"
-          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+          chmod +x scripts/ci-package.sh
+          mkdir -p release-out
+          scripts/ci-package.sh centos7 "${VERSION}" dist release-out
+          scripts/ci-package.sh intel "${VERSION}" dist release-out
+          ls -lh release-out/*.tar.bz2
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
 
-      - name: Upload release tarball
+      - name: Upload release tarballs
         uses: actions/upload-artifact@v4
         with:
           name: bwa-mem2-x64-linux
-          path: ${{ env.ARTIFACT }}
+          path: release-out/*.tar.bz2
           if-no-files-found: error
 
   release:
@@ -322,7 +327,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.create_release)
     steps:
-      - name: Download release tarball
+      - name: Download release tarballs
         uses: actions/download-artifact@v4
         with:
           name: bwa-mem2-x64-linux
@@ -339,28 +344,34 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           body: |
-            ## Single package — Multi-ISA Linux x86_64
+            ## Two packages — pick by OS
 
-            One tarball. **Root `bwa-mem2`** is a super-dispatcher: Intel ISA siblings when
-            CLWB is present; otherwise auto handoff to `extra/bwa-mem2.gcc-full` (AMD / no-CLWB).
+            | File | Runs on | Root |
+            |------|---------|------|
+            | `bwa-mem2-${{ github.ref_name }}_centos7_x64-linux.tar.bz2` | **CentOS 7 / RHEL 7+** (glibc 2.17) | GCC multi |
+            | `bwa-mem2-${{ github.ref_name }}_intel_x64-linux.tar.bz2` | Ubuntu 22.04+ / modern (glibc 2.33+) | Intel official |
 
-            ```
-            bwa-mem2-${{ github.ref_name }}_x64-linux/
-              bwa-mem2                        # super-dispatcher
-              bwa-mem2.sse41 … .avx512bw      # Intel official ISA siblings
-              extra/                          # flat (no subdirs)
-                bwa-mem2.gcc-full             # portable multi (auto handoff target)
-                bwa-mem2.gcc-avx2-fleet       # up to AVX2
-                bwa-mem2.intel-avx512-noclwb
-                bwa-mem2.sse41 … bwa-mem2.avx512bw   # single-ISA pins
-            ```
+            CentOS 7 users: download the **`centos7`** tarball only. The `intel`
+            package will fail with `GLIBC_2.33 not found`.
 
-            ### Usage (one entry for Intel and AMD)
+            ### CentOS 7 package
+
+            Built in manylinux2014. Root `bwa-mem2` dispatches GCC ISA siblings;
+            AVX-512 without CLWB → `extra/bwa-mem2.gcc-full`.
+
+            ### Intel package
+
+            Root prefers Intel ISA siblings when CLWB is present; otherwise hands
+            off to `extra/bwa-mem2.gcc-full` (AMD / no-CLWB)
+            ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
+            [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+
+            ### Usage (CentOS 7 example)
 
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/bwa-mem2-${{ github.ref_name }}_x64-linux.tar.bz2 \
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/bwa-mem2-${{ github.ref_name }}_centos7_x64-linux.tar.bz2 \
               | tar jxf -
-            bwa-mem2-${{ github.ref_name }}_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
-            bwa-mem2-${{ github.ref_name }}_x64-linux/bwa-mem2 which   # show selected binary
+            bwa-mem2-${{ github.ref_name }}_centos7_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
+            bwa-mem2-${{ github.ref_name }}_centos7_x64-linux/bwa-mem2 which
             ```
           files: release-assets/*.tar.bz2
