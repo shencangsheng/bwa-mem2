@@ -41,6 +41,10 @@ jobs:
           - platform: intel-multi
             artifact: intel-official
             compiler: intel
+          # icpc AVX-512 via -march=skylake-avx512 (no CLWB gate)
+          - platform: intel-avx512-noclwb
+            artifact: intel-avx512-noclwb
+            compiler: intel
     steps:
       - name: Checkout (with safestringlib submodule)
         uses: actions/checkout@v4
@@ -232,6 +236,7 @@ jobs:
             | `gcc-full` / `gcc-multi` | GCC | Full set + dispatcher; no CLWB gate |
             | `gcc-avx2-fleet` / `gcc-avx2` | GCC | Up to AVX2 (AMD Zen1–Zen3 / Intel AVX2) |
             | `intel-official` / `intel-multi` | Intel oneAPI (`icpc`→`icpx`) | Same as upstream `make CXX=icpc multi`; AVX-512 needs CLWB + Intel CPU ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160), [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)) |
+            | `intel-avx512-noclwb` / `intel-avx512-noclwb` | Intel oneAPI | Single AVX-512 via `-march=skylake-avx512` (no CLWB) |
 
             ### Single-ISA (GCC)
 
