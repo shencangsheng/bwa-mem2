@@ -16,4 +16,5 @@ all:
 	  echo "ERROR: $(CXX) not found. Install Intel oneAPI C++ and ensure icpc/icc are on PATH."; \
 	  exit 1; \
 	}
-	$(MAKE) -C $(ROOT_DIR) -f Makefile multi CXX=$(CXX) CC=$(CC)
+	$(MAKE) -C $(ROOT_DIR) -f Makefile multi \
+		CXX=$(CXX) CC=$(CC) CXXFLAGS='$(INTEL_CXXFLAGS)'
