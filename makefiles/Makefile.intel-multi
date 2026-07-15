@@ -1,0 +1,11 @@
+# Upstream-style Intel icpc multi (make CXX=icpc multi).
+# Requires Intel CPU with CLWB for the AVX-512 binary — often fails on
+# AMD and some cloud VMs (#160, #236). Prefer gcc-* platforms for ECS.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+CXX := icpc
+CC  := icc
+
+.PHONY: all
+all:
+	$(MAKE) -C $(ROOT_DIR) -f Makefile multi CXX=$(CXX) CC=$(CC)

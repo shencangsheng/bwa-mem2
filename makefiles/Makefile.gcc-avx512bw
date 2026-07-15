@@ -1,0 +1,9 @@
+# Single AVX-512BW binary via upstream arch=avx512 (GCC: -mavx512bw).
+# No Intel -xCORE-AVX512 / CLWB gate — OK for cloud Intel VMs without CLWB
+# and AMD Zen4+ (see https://github.com/bwa-mem2/bwa-mem2/issues/160 #236).
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,avx512,bwa-mem2.avx512bw)
+	cp -f $(ROOT_DIR)/bwa-mem2.avx512bw $(ROOT_DIR)/bwa-mem2

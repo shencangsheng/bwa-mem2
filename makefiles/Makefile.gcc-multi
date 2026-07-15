@@ -1,0 +1,7 @@
+# GCC full multi: sse41, sse42, avx, avx2, avx512bw + dispatcher
+# Prefer this for heterogeneous ECS; no Intel CLWB CPUID gate.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(MAKE) -C $(ROOT_DIR) -f Makefile multi portable=$(PORTABLE) CXX=$(CXX) CC=$(CC)

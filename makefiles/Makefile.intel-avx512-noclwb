@@ -1,0 +1,14 @@
+# Intel icpc AVX-512 without CLWB: pass -march=skylake-avx512 through
+# upstream's custom arch= path (avoids -xCORE-AVX512 CPUID gate).
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+CXX := icpc
+CC  := icc
+
+.PHONY: all
+all:
+	$(call clean_objs)
+	$(MAKE) -C $(ROOT_DIR) -f Makefile \
+		arch='-march=skylake-avx512' EXE=bwa-mem2.avx512bw \
+		CXX=$(CXX) CC=$(CC) all
+	cp -f $(ROOT_DIR)/bwa-mem2.avx512bw $(ROOT_DIR)/bwa-mem2

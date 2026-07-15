@@ -1,0 +1,7 @@
+# Single SSE4.1 binary — maximum x86_64 compatibility.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,sse41,bwa-mem2.sse41)
+	cp -f $(ROOT_DIR)/bwa-mem2.sse41 $(ROOT_DIR)/bwa-mem2

@@ -1,0 +1,7 @@
+# Single SSE4.2 binary.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,sse42,bwa-mem2.sse42)
+	cp -f $(ROOT_DIR)/bwa-mem2.sse42 $(ROOT_DIR)/bwa-mem2

@@ -1,0 +1,12 @@
+# GCC up to AVX2 only + dispatcher (no avx512bw).
+# Use on AMD Zen1–Zen3 and Intel AVX2 fleets where AVX-512 is unavailable
+# or undesirable (dispatcher would otherwise try .avx512bw first).
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,sse41,bwa-mem2.sse41)
+	$(call build_one,sse42,bwa-mem2.sse42)
+	$(call build_one,avx,bwa-mem2.avx)
+	$(call build_one,avx2,bwa-mem2.avx2)
+	$(call build_dispatcher)

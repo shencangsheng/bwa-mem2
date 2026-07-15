@@ -1,0 +1,42 @@
+# Platform build entry — does not modify upstream Makefile.
+#
+# Usage:
+#   make -f Makefile.platforms                    # default: gcc-multi
+#   make -f Makefile.platforms PLATFORM=gcc-avx2
+#   make -f Makefile.platforms PLATFORM=gcc-avx512bw
+#   make -f Makefile.platforms help
+#
+# ECS / CPU mapping (GCC builds avoid Intel CLWB / vendor gates; see issues #160 #236):
+#   PLATFORM                 When to use
+#   -----------------------  --------------------------------------------------
+#   gcc-multi                Full set + dispatcher (sse41…avx512bw)
+#   gcc-avx2                 Up to AVX2 only — AMD Zen1–Zen3 / Intel AVX2 ECS
+#   gcc-sse41                Maximum compatibility
+#   gcc-sse42                SSE4.2-only hosts
+#   gcc-avx                  AVX hosts
+#   gcc-avx2-bin             Single AVX2 binary (pin one ISA per ECS image)
+#   gcc-avx512bw             Single AVX-512BW (Intel no-CLWB / AMD Zen4+)
+#   intel-multi              Upstream icpc multi (needs CLWB + Intel CPU)
+#   intel-avx512-noclwb      icpc AVX-512 via -march=skylake-avx512 (no CLWB)
+
+PLATFORM ?= gcc-multi
+CXX      ?= g++
+CC       ?= gcc
+PORTABLE ?= 1
+
+MAKEFILES_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))makefiles
+
+.PHONY: all help clean $(PLATFORM)
+
+all: $(PLATFORM)
+
+help:
+	@sed -n '1,28p' $(abspath $(lastword $(MAKEFILE_LIST)))
+
+$(PLATFORM):
+	$(MAKE) -f $(MAKEFILES_DIR)/Makefile.$(PLATFORM) \
+		CXX=$(CXX) CC=$(CC) PORTABLE=$(PORTABLE)
+
+clean:
+	$(MAKE) -f Makefile clean
+	rm -f bwa-mem2 bwa-mem2.sse41 bwa-mem2.sse42 bwa-mem2.avx bwa-mem2.avx2 bwa-mem2.avx512bw

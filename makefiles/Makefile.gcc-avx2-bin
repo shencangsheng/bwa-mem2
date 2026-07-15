@@ -1,0 +1,7 @@
+# Single AVX2 binary — typical modern Intel / AMD Zen1–Zen3 ECS pin.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,avx2,bwa-mem2.avx2)
+	cp -f $(ROOT_DIR)/bwa-mem2.avx2 $(ROOT_DIR)/bwa-mem2

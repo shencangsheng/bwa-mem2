@@ -1,0 +1,198 @@
+# Build SIMD-specific bwa-mem2 binaries via platform Makefiles
+# (upstream Makefile is left untouched).
+#
+#   make -f Makefile.platforms PLATFORM=<name>
+#
+# See Makefile.platforms and issues:
+#   https://github.com/bwa-mem2/bwa-mem2/issues/160  (CLWB)
+#   https://github.com/bwa-mem2/bwa-mem2/issues/236  (AMD Zen4 / Intel -x)
+
+name: Build multi-ISA binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Upload artifacts to a GitHub Release (tag push always releases)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-bundle:
+    name: Bundle ${{ matrix.platform }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: gcc-multi
+            artifact: gcc-full
+          - platform: gcc-avx2
+            artifact: gcc-avx2-fleet
+    steps:
+      - name: Checkout (with safestringlib submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential zlib1g-dev
+
+      - name: Build PLATFORM=${{ matrix.platform }}
+        run: |
+          make -f Makefile.platforms PLATFORM="${{ matrix.platform }}"
+          ls -lh bwa-mem2 bwa-mem2.* || true
+          file bwa-mem2 bwa-mem2.* || true
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          case "${VERSION}" in
+            v*) ;;
+            *) VERSION="sha-${GITHUB_SHA::8}" ;;
+          esac
+          PKG="bwa-mem2-${VERSION}_${{ matrix.artifact }}_x64-linux"
+          mkdir -p "${PKG}"
+          cp -a bwa-mem2 bwa-mem2.* \
+                scripts/select-binary.sh README.md LICENSE \
+                "${PKG}/" 2>/dev/null || true
+          # ensure named ISA binaries are present when built
+          for b in bwa-mem2 bwa-mem2.sse41 bwa-mem2.sse42 bwa-mem2.avx \
+                   bwa-mem2.avx2 bwa-mem2.avx512bw; do
+            [[ -e "$b" ]] && cp -a "$b" "${PKG}/"
+          done
+          cp -a scripts/select-binary.sh README.md LICENSE "${PKG}/"
+          chmod +x "${PKG}"/bwa-mem2* "${PKG}/select-binary.sh" 2>/dev/null || true
+          tar -cjf "${PKG}.tar.bz2" "${PKG}"
+          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bwa-mem2-${{ matrix.artifact }}
+          path: ${{ env.ARTIFACT }}
+          if-no-files-found: error
+
+  build-single:
+    name: Single ${{ matrix.platform }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - gcc-sse41
+          - gcc-sse42
+          - gcc-avx
+          - gcc-avx2-bin
+          - gcc-avx512bw
+    steps:
+      - name: Checkout (with safestringlib submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential zlib1g-dev
+
+      - name: Build PLATFORM=${{ matrix.platform }}
+        run: |
+          make -f Makefile.platforms clean || true
+          make -f Makefile.platforms PLATFORM="${{ matrix.platform }}"
+          ls -lh bwa-mem2*
+          file bwa-mem2*
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          case "${VERSION}" in
+            v*) ;;
+            *) VERSION="sha-${GITHUB_SHA::8}" ;;
+          esac
+          # strip gcc- prefix for artifact name
+          ISA="${{ matrix.platform }}"
+          ISA="${ISA#gcc-}"
+          ISA="${ISA%-bin}"
+          PKG="bwa-mem2-${VERSION}_${ISA}_x64-linux"
+          mkdir -p "${PKG}"
+          cp -a bwa-mem2 README.md LICENSE "${PKG}/"
+          for b in bwa-mem2.*; do
+            [[ -e "$b" ]] && cp -a "$b" "${PKG}/"
+          done
+          chmod +x "${PKG}"/bwa-mem2*
+          tar -cjf "${PKG}.tar.bz2" "${PKG}"
+          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bwa-mem2-${{ matrix.platform }}
+          path: ${{ env.ARTIFACT }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-bundle, build-single]
+    runs-on: ubuntu-22.04
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten tarballs
+        run: |
+          mkdir -p release-assets
+          find dist -type f -name '*.tar.bz2' -exec cp -a {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.sha) }}
+          name: bwa-mem2 binaries ${{ github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: true
+          body: |
+            ## Multi-ISA Linux x86_64 (GCC via `Makefile.platforms`)
+
+            Upstream `Makefile` unchanged. Builds use:
+            ```bash
+            make -f Makefile.platforms PLATFORM=<name>
+            ```
+
+            GCC builds avoid Intel `icpc -xCORE-AVX512` CLWB / vendor CPUID gates
+            ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
+            [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+
+            | Package / PLATFORM | ECS use |
+            |--------------------|---------|
+            | `gcc-full` / `gcc-multi` | Full set + dispatcher |
+            | `gcc-avx2-fleet` / `gcc-avx2` | AMD Zen1–Zen3 / Intel AVX2 |
+            | `sse41` | Max compatibility |
+            | `avx2` / `gcc-avx2-bin` | Pin AVX2 per image |
+            | `avx512bw` | Intel no-CLWB / AMD Zen4+ |
+
+            ```bash
+            ./bwa-mem2.avx2 mem ...
+            ./select-binary.sh . mem ref.fa r1.fq r2.fq
+            ```
+          files: release-assets/*.tar.bz2

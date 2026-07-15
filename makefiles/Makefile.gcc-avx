@@ -1,0 +1,7 @@
+# Single AVX binary.
+include $(dir $(lastword $(MAKEFILE_LIST)))common.mk
+
+.PHONY: all
+all:
+	$(call build_one,avx,bwa-mem2.avx)
+	cp -f $(ROOT_DIR)/bwa-mem2.avx $(ROOT_DIR)/bwa-mem2
