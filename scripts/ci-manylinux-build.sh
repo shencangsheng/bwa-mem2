@@ -9,9 +9,23 @@ set -euo pipefail
 PLATFORM="${1:?usage: $0 <PLATFORM>}"
 ARTIFACT="${2:?usage: $0 <PLATFORM> <artifact-name>}"
 
+# Read all of stdin, then print first/last line.
+# Under pipefail, `cmd | head -n1` / `tail -n1` closes the pipe early → SIGPIPE (exit 141).
+first_line() {
+  local out
+  out="$(cat)"
+  printf '%s\n' "${out%%$'\n'*}"
+}
+
+last_line() {
+  local out
+  out="$(cat)"
+  printf '%s\n' "${out##*$'\n'}"
+}
+
 echo "==> manylinux2014 build PLATFORM=${PLATFORM} artifact=${ARTIFACT}"
 echo "glibc (build host):"
-ldd --version | head -n1
+ldd --version | first_line
 
 # CentOS 7 vault / manylinux image already has a recent gcc toolchain.
 yum install -y -q zlib-devel >/dev/null
@@ -22,7 +36,7 @@ if [[ -x /opt/rh/devtoolset-10/root/usr/bin/g++ ]]; then
   source /opt/rh/devtoolset-10/enable || true
 fi
 # manylinux2014 images also ship /usr/local or /opt/python toolchains; default g++ is fine if ≥7.
-g++ --version | head -n1
+g++ --version | first_line
 
 make -f Makefile.platforms clean || true
 make -f Makefile.platforms PLATFORM="${PLATFORM}" PORTABLE=1
@@ -36,11 +50,12 @@ check_glibc() {
   local bin="$1"
   [[ -f "$bin" ]] || return 0
   local ver
-  ver="$(objdump -T "$bin" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | tail -n1 || true)"
+  # Consume the full pipeline before taking the last line (avoids SIGPIPE under pipefail).
+  ver="$(objdump -T "$bin" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sed 's/^GLIBC_//' | sort -Vu | last_line || true)"
   echo "  ${bin}: max ${ver:+GLIBC_${ver}}${ver:-none}"
   if [[ -n "${ver}" ]]; then
     # sort -V: if the higher of {ver, 2.17} is not 2.17, then ver > 2.17
-    if [[ "$(printf '%s\n' "${ver}" "2.17" | sort -V | tail -n1)" != "2.17" ]]; then
+    if [[ "$(printf '%s\n' "${ver}" "2.17" | sort -V | last_line)" != "2.17" ]]; then
       echo "ERROR: ${bin} requires GLIBC_${ver} (> GLIBC_2.17); not CentOS 7 portable" >&2
       exit 1
     fi
@@ -65,7 +80,7 @@ done
   echo "container=quay.io/pypa/manylinux2014_x86_64"
   echo "glibc_target=2.17"
   echo "note=CentOS 7 / RHEL 7 portable (Intel oneAPI skipped: modern icx needs newer glibc)"
-  g++ --version | head -n1
-  ldd --version | head -n1
+  g++ --version | first_line
+  ldd --version | first_line
 } > "${STAGE}/BUILD_INFO.txt"
 ls -lh "${STAGE}"
