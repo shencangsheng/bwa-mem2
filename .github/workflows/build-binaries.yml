@@ -217,19 +217,26 @@ jobs:
           echo "Downloaded artifacts:"
           find dist -type f | sort
 
+          # upload/download-artifact does not reliably preserve +x; runsimd also
+          # requires S_IXUSR on ISA siblings before execv.
+          find dist -type f \( -name 'bwa-mem2' -o -name 'bwa-mem2.*' \) -exec chmod +x {} +
+
           # Root = upstream-style intel-official (make CXX=icpc multi)
           ROOT_SRC=""
           for d in dist/bin-intel-official dist/intel-official; do
             if [[ -d "$d" ]]; then ROOT_SRC="$d"; break; fi
           done
           test -n "${ROOT_SRC}"
-          test -x "${ROOT_SRC}/bwa-mem2"
+          test -f "${ROOT_SRC}/bwa-mem2"
           cp -a "${ROOT_SRC}"/. "${PKG}/"
           mv "${PKG}/BUILD_INFO.txt" "${PKG}/BUILD_INFO.root.txt" 2>/dev/null || true
 
           # Flat extra/: rename so multi dispatchers still find sibling ISA bins.
           #   multi:  bwa-mem2.<artifact> + bwa-mem2.<artifact>.<isa>
           #   single: bwa-mem2.<artifact>
+          #
+          # Single-ISA jobs also stage bwa-mem2 + bwa-mem2.<isa>; that is NOT a
+          # multi bundle. Only known multi/fleet artifacts keep prefixed siblings.
           for dir in dist/bin-*; do
             [[ -d "$dir" ]] || continue
             name="${dir#dist/bin-}"
@@ -241,15 +248,22 @@ jobs:
               cp -a "${dir}/BUILD_INFO.txt" "${PKG}/extra/BUILD_INFO.${name}.txt"
             fi
 
-            isa_siblings=0
+            isa_count=0
             for isa in sse41 sse42 avx avx2 avx512bw; do
               if [[ -e "${dir}/bwa-mem2.${isa}" ]]; then
-                isa_siblings=1
-                break
+                isa_count=$((isa_count + 1))
               fi
             done
 
-            if [[ "${isa_siblings}" -eq 1 && -e "${dir}/bwa-mem2" ]]; then
+            is_multi=0
+            case "$name" in
+              gcc-full|gcc-avx2-fleet|intel-avx512-noclwb) is_multi=1 ;;
+            esac
+            if [[ "${isa_count}" -ge 2 ]]; then
+              is_multi=1
+            fi
+
+            if [[ "${is_multi}" -eq 1 && -e "${dir}/bwa-mem2" ]]; then
               # Multi bundle: keep dispatcher + prefixed ISA siblings
               cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
               for isa in sse41 sse42 avx avx2 avx512bw; do
@@ -258,13 +272,14 @@ jobs:
                 fi
               done
             else
-              # Single binary (or intel-avx512-noclwb style)
+              # Single-ISA pin
               if [[ -e "${dir}/bwa-mem2" ]]; then
                 cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
               elif [[ -e "${dir}/bwa-mem2.avx512bw" ]]; then
                 cp -a "${dir}/bwa-mem2.avx512bw" "${PKG}/extra/bwa-mem2.${name}"
               else
                 echo "ERROR: no binary in ${dir}" >&2
+                ls -la "${dir}" >&2 || true
                 exit 1
               fi
             fi
