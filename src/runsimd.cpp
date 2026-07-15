@@ -7,7 +7,7 @@
    Permission is hereby granted, free of charge, to any person obtaining
    a copy of this software and associated documentation files (the
    "Software"), to deal in the Software without restriction, including
-   without limitation the rights to use, copy, modify, merge, publish,
+    without limitation the rights to use, copy, modify, merge, publish,
    distribute, sublicense, and/or sell copies of the Software, and to
    permit persons to whom the Software is furnished to do so, subject to
    the following conditions:
@@ -92,6 +92,18 @@ static int x86_simd(void)
 	return flag;
 }
 
+/* CPUID.(EAX=7,ECX=0):EBX[24] = CLWB.
+ * Upstream icpc -xCORE-AVX512 binaries refuse to run without it (#160, #236). */
+static int x86_has_clwb(void)
+{
+	int cpuid[4], max_id;
+	__cpuidex(cpuid, 0, 0);
+	max_id = cpuid[0];
+	if (max_id < 7) return 0;
+	__cpuidex(cpuid, 7, 0);
+	return (cpuid[1] >> 24) & 1;
+}
+
 static int exe_path(const char *exe, int max, char buf[], int *base_st)
 {
 	int i, len, last_slash, ret = 0;
@@ -149,6 +161,18 @@ static int exe_path(const char *exe, int max, char buf[], int *base_st)
 	return ret;
 }
 
+static const char *path_basename(const char *path)
+{
+	const char *slash = strrchr(path, '/');
+	return slash ? slash + 1 : path;
+}
+
+/* Only the release-root name does portable handoff (avoid recursing from gcc-full). */
+static int is_root_dispatcher(const char *prefix)
+{
+	return strcmp(path_basename(prefix), "bwa-mem2") == 0;
+}
+
 /* Append simd suffix to prefix; return 1 if the path exists and is executable.
  * On success prefix holds the full path; on failure prefix is restored. */
 static int try_binary(char *prefix, const char *simd)
@@ -162,14 +186,50 @@ static int try_binary(char *prefix, const char *simd)
 	return 0;
 }
 
-/* Prefer highest ISA available on this CPU that also has a shipped binary. */
-static const char *select_simd_suffix(int simd, char *prefix)
+/* Build <dir>/extra/<name> next to root dispatcher; return 1 if executable. */
+static int try_extra_binary(const char *prefix, const char *name, char *out)
 {
-	if ((simd & SIMD_AVX512BW) && try_binary(prefix, ".avx512bw")) return "avx512bw";
+	struct stat st;
+	const char *base = path_basename(prefix);
+	size_t dir_len = (size_t)(base - prefix);
+
+	if (dir_len + strlen("extra/") + strlen(name) + 1 > PATH_MAX)
+		return 0;
+	memcpy(out, prefix, dir_len);
+	out[dir_len] = 0;
+	strcat_s(out, PATH_MAX, "extra/");
+	strcat_s(out, PATH_MAX, name);
+	if (stat(out, &st) == 0 && (st.st_mode & S_IXUSR))
+		return 1;
+	return 0;
+}
+
+/* Intel -xCORE-AVX512 path is unsafe when CPU advertises AVX512BW but lacks CLWB. */
+static int needs_portable_avx512(int simd, int has_clwb)
+{
+	return (simd & SIMD_AVX512BW) && !has_clwb;
+}
+
+/* Prefer highest ISA available on this CPU that also has a shipped binary.
+ * allow_avx512 is false only for root Intel siblings when the CPU lacks CLWB. */
+static const char *select_simd_suffix(int simd, int allow_avx512, char *prefix)
+{
+	if ((simd & SIMD_AVX512BW) && allow_avx512 && try_binary(prefix, ".avx512bw"))
+		return "avx512bw";
 	if ((simd & SIMD_AVX2) && try_binary(prefix, ".avx2")) return "avx2";
 	if ((simd & SIMD_AVX) && try_binary(prefix, ".avx")) return "avx";
 	if ((simd & SIMD_SSE4_2) && try_binary(prefix, ".sse42")) return "sse42";
 	if ((simd & SIMD_SSE4_1) && try_binary(prefix, ".sse41")) return "sse41";
+	return NULL;
+}
+
+/* Prefer full GCC multi; fall back to single no-CLWB AVX-512 pin. */
+static const char *select_portable_handoff(const char *prefix, char *out)
+{
+	if (try_extra_binary(prefix, "bwa-mem2.gcc-full", out))
+		return "gcc-full";
+	if (try_extra_binary(prefix, "bwa-mem2.intel-avx512-noclwb", out))
+		return "intel-avx512-noclwb";
 	return NULL;
 }
 
@@ -194,7 +254,16 @@ static void print_cpu_simd(int simd)
 	fputc('\n', stdout);
 }
 
-static void test_and_launch(char *argv[], char *prefix, const char *simd) // we assume prefix is long enough
+/* execv replaces the process; set argv[0] so nested dispatchers resolve siblings. */
+static void launch_path(char *argv[], char *path)
+{
+	fprintf(stderr, "Launching executable \"%s\"\n", path);
+	argv[0] = path;
+	execv(path, argv);
+	fprintf(stderr, "ERROR: execv failed for %s\n", path);
+}
+
+static void test_and_launch(char *argv[], char *prefix, const char *simd)
 {
 	struct stat st;
 	int prefix_len = strlen(prefix);
@@ -203,8 +272,7 @@ static void test_and_launch(char *argv[], char *prefix, const char *simd) // we 
 	if (stat(prefix, &st) == 0)
 	{
 		if (st.st_mode & S_IXUSR) {
-			fprintf(stderr, "Launching executable \"%s\"\n", prefix);
-			execv(prefix, argv);
+			launch_path(argv, prefix);
 		}
 		else
 		{
@@ -220,8 +288,8 @@ static void test_and_launch(char *argv[], char *prefix, const char *simd) // we 
 
 int main(int argc, char *argv[])
 {
-	char buf[PATH_MAX], *prefix, *argv0 = argv[0];
-	int ret, base_st, simd;
+	char buf[PATH_MAX], handoff[PATH_MAX], *prefix, *argv0 = argv[0];
+	int ret, base_st, simd, has_clwb, allow_avx512;
 	int show_which = (argc >= 2 &&
 		(strcmp(argv[1], "which") == 0 || strcmp(argv[1], "--which") == 0));
 
@@ -237,9 +305,37 @@ int main(int argc, char *argv[])
 	strcpy_s(prefix, PATH_MAX, buf);
 	strcat_s(prefix, PATH_MAX, &argv0[base_st]);
 	simd = x86_simd();
+	has_clwb = x86_has_clwb();
+	/* Root Intel .avx512bw needs CLWB; GCC multi / other names do not. */
+	allow_avx512 = has_clwb || !is_root_dispatcher(prefix);
+
+	/* Super-dispatcher: root bwa-mem2 hands off when Intel AVX-512 siblings
+	 * would hit the CLWB gate (AMD Zen4, some cloud VMs). Nested dispatchers
+	 * (e.g. extra/bwa-mem2.gcc-full) skip this and only do ISA selection. */
+	if (is_root_dispatcher(prefix) && needs_portable_avx512(simd, has_clwb)) {
+		const char *portable = select_portable_handoff(prefix, handoff);
+		if (portable != NULL) {
+			if (show_which) {
+				printf("binary: %s\n", handoff);
+				printf("platform: %s\n", portable);
+				printf("dispatch: portable (avx512 without CLWB)\n");
+				print_cpu_simd(simd);
+				printf("cpu_clwb: no\n");
+				free(prefix);
+				return 0;
+			}
+			fprintf(stderr, "AVX512 without CLWB: handing off to portable build \"%s\"\n",
+				handoff);
+			launch_path(argv, handoff);
+			/* exec failed — fall through to root ISA cascade without avx512 */
+		} else {
+			fprintf(stderr, "WARNING: AVX512 without CLWB and no extra/ portable build; "
+				"skipping root .avx512bw\n");
+		}
+	}
 
 	if (show_which) {
-		const char *platform = select_simd_suffix(simd, prefix);
+		const char *platform = select_simd_suffix(simd, allow_avx512, prefix);
 		if (platform == NULL) {
 			fprintf(stderr, "ERROR: fail to find the right executable\n");
 			free(prefix);
@@ -248,11 +344,12 @@ int main(int argc, char *argv[])
 		printf("binary: %s\n", prefix);
 		printf("platform: %s\n", platform);
 		print_cpu_simd(simd);
+		printf("cpu_clwb: %s\n", has_clwb ? "yes" : "no");
 		free(prefix);
 		return 0;
 	}
 
-	if (simd & SIMD_AVX512BW) test_and_launch(argv, prefix, ".avx512bw");
+	if ((simd & SIMD_AVX512BW) && allow_avx512) test_and_launch(argv, prefix, ".avx512bw");
 	if (simd & SIMD_AVX2) test_and_launch(argv, prefix, ".avx2");
 	if (simd & SIMD_AVX) test_and_launch(argv, prefix, ".avx");
 	if (simd & SIMD_SSE4_2) test_and_launch(argv, prefix, ".sse42");

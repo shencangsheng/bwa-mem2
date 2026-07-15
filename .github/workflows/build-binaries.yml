@@ -1,9 +1,10 @@
-# Build all PLATFORM variants (same set as v2.3.7), then ship ONE tar.bz2:
+# Build all PLATFORM variants, then ship ONE tar.bz2:
 #
 #   <pkg>/
-#     bwa-mem2*                      # root = upstream intel-official (icpc multi)
-#     extra/bwa-mem2.<artifact>[.<isa>]   # flat; multi bundles keep dispatcher+ISA siblings
+#     bwa-mem2*                      # root = super-dispatcher + intel-official ISA siblings
+#     extra/bwa-mem2.<artifact>[.<isa>]   # flat; gcc-full = portable handoff target
 #
+#   Root runsimd: CLWB → Intel siblings; AVX512 without CLWB → extra/gcc-full.
 #   make -f Makefile.platforms PLATFORM=<name>
 #
 # See Makefile.platforms and issues:
@@ -34,10 +35,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Root of the release tarball (upstream: make CXX=icpc multi)
+          # Root ISA siblings + super-dispatcher (enhanced runsimd from this build)
           - platform: intel-multi
             artifact: intel-official
             compiler: intel
+          # Portable handoff target for AVX512 without CLWB
           - platform: gcc-multi
             artifact: gcc-full
             compiler: gcc
@@ -221,7 +223,7 @@ jobs:
           # requires S_IXUSR on ISA siblings before execv.
           find dist -type f \( -name 'bwa-mem2' -o -name 'bwa-mem2.*' \) -exec chmod +x {} +
 
-          # Root = upstream-style intel-official (make CXX=icpc multi)
+          # Root = intel-official ISA siblings + super-dispatcher (runsimd)
           ROOT_SRC=""
           for d in dist/bin-intel-official dist/intel-official; do
             if [[ -d "$d" ]]; then ROOT_SRC="$d"; break; fi
@@ -292,10 +294,10 @@ jobs:
 
           {
             echo "layout=single-tarball-flat-extra"
-            echo "root=intel-official (upstream make CXX=icpc multi)"
+            echo "root=super-dispatcher + intel-official ISA siblings"
             echo "extra=flat files under extra/ (see extra/README.md)"
-            echo "note=Root bwa-mem2 auto-dispatches among root ISA binaries via CPUID."
-            echo "note=AMD / no-CLWB: ./extra/bwa-mem2.gcc-full or ./extra/bwa-mem2.intel-avx512-noclwb"
+            echo "note=Root bwa-mem2: CLWB → Intel siblings; AVX512 without CLWB → extra/gcc-full."
+            echo "note=Inspect: ./bwa-mem2 which"
           } > "${PKG}/BUILD_INFO.txt"
 
           echo "Package tree:"
@@ -339,32 +341,26 @@ jobs:
           body: |
             ## Single package — Multi-ISA Linux x86_64
 
-            One tarball. **Root** matches upstream Intel official multi (`make CXX=icpc multi`);
-            extended builds live under `extra/`.
+            One tarball. **Root `bwa-mem2`** is a super-dispatcher: Intel ISA siblings when
+            CLWB is present; otherwise auto handoff to `extra/bwa-mem2.gcc-full` (AMD / no-CLWB).
 
             ```
             bwa-mem2-${{ github.ref_name }}_x64-linux/
-              bwa-mem2                        # Intel official dispatcher
-              bwa-mem2.sse41 … .avx512bw
+              bwa-mem2                        # super-dispatcher
+              bwa-mem2.sse41 … .avx512bw      # Intel official ISA siblings
               extra/                          # flat (no subdirs)
-                bwa-mem2.gcc-full             # GCC multi (+ .sse41…avx512bw siblings)
+                bwa-mem2.gcc-full             # portable multi (auto handoff target)
                 bwa-mem2.gcc-avx2-fleet       # up to AVX2
                 bwa-mem2.intel-avx512-noclwb
                 bwa-mem2.sse41 … bwa-mem2.avx512bw   # single-ISA pins
             ```
 
-            ### Usage (default = Intel official at root)
+            ### Usage (one entry for Intel and AMD)
 
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/bwa-mem2-${{ github.ref_name }}_x64-linux.tar.bz2 \
               | tar jxf -
             bwa-mem2-${{ github.ref_name }}_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
-            ```
-
-            AMD / no-CLWB hosts:
-            ```bash
-            ./extra/bwa-mem2.gcc-full mem ...
-            # or
-            ./extra/bwa-mem2.intel-avx512-noclwb mem ...
+            bwa-mem2-${{ github.ref_name }}_x64-linux/bwa-mem2 which   # show selected binary
             ```
           files: release-assets/*.tar.bz2

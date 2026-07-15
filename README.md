@@ -20,11 +20,10 @@
 # Replace VERSION with a release tag, e.g. v2.3.8
 curl -L https://github.com/shencangsheng/bwa-mem2/releases/download/VERSION/bwa-mem2-VERSION_x64-linux.tar.bz2 \
   | tar jxf -
-# Root = upstream Intel official multi (same idea as make CXX=icpc multi)
+# One entry: root bwa-mem2 auto-picks Intel siblings or extra/gcc-full (no CLWB / AMD)
 bwa-mem2-VERSION_x64-linux/bwa-mem2 index ref.fa
 bwa-mem2-VERSION_x64-linux/bwa-mem2 mem ref.fa read1.fq read2.fq > out.sam
-# AMD / no-CLWB: use GCC multi under extra/
-# bwa-mem2-VERSION_x64-linux/extra/bwa-mem2.gcc-full mem ...
+# Inspect selection: ./bwa-mem2 which
 
 # Compile from source (not recommended for general users)
 # Get the source
@@ -35,9 +34,9 @@ git clone https://github.com/shencangsheng/bwa-mem2
 cd bwa-mem2
 git submodule init
 git submodule update
-# Upstream-style (Intel):  make -f Makefile.platforms PLATFORM=intel-multi
-# GCC multi (AMD-friendly): make -f Makefile.platforms PLATFORM=gcc-multi
-make -f Makefile.platforms PLATFORM=intel-multi
+# Default (AMD-friendly GCC multi): make -f Makefile.platforms
+# Upstream-style Intel multi (release root siblings): PLATFORM=intel-multi
+make -f Makefile.platforms PLATFORM=gcc-multi
 ./bwa-mem2
 ```
 
@@ -58,8 +57,8 @@ For general users, it is recommended to use the precompiled binaries from the
 
 ```
 bwa-mem2-<tag>_x64-linux/
-  bwa-mem2                        # root: Intel official dispatcher (CPUID → exec)
-  bwa-mem2.sse41 … .avx512bw
+  bwa-mem2                        # super-dispatcher (CPUID + CLWB → exec)
+  bwa-mem2.sse41 … .avx512bw      # Intel official ISA siblings
   extra/                          # flat (no nested dirs)
     bwa-mem2.gcc-full             # GCC multi (+ .gcc-full.<isa> siblings)
     bwa-mem2.gcc-avx2-fleet
@@ -67,17 +66,17 @@ bwa-mem2-<tag>_x64-linux/
     bwa-mem2.sse41 … bwa-mem2.avx512bw
 ```
 
-- **Root** matches upstream `make CXX=icpc multi` (`PLATFORM=intel-multi`).
-- **`extra/`** is a flat directory of extended builds from this fork.
-
-AVX-512 on AMD / hosts without CLWB: `./extra/bwa-mem2.gcc-full` or
-`./extra/bwa-mem2.intel-avx512-noclwb`
-([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
-[#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+- **Root `bwa-mem2`** is a super-dispatcher: with CLWB it launches Intel ISA siblings;
+  without CLWB but with AVX-512 it hands off to `extra/bwa-mem2.gcc-full` (then
+  `intel-avx512-noclwb`) so AMD / cloud hosts keep working
+  ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
+  [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+- **`extra/`** holds portable / pinned builds; you normally do not call them by hand.
 
 ```sh
-make -f Makefile.platforms PLATFORM=intel-multi   # root layout
-make -f Makefile.platforms PLATFORM=gcc-multi     # → extra/bwa-mem2.gcc-full
+make -f Makefile.platforms PLATFORM=intel-multi   # Intel siblings (release root)
+make -f Makefile.platforms PLATFORM=gcc-multi     # → packaged as extra/bwa-mem2.gcc-full
+./bwa-mem2 which                                  # print selected binary / platform
 ```
 
 [bwa]: https://github.com/lh3/bwa
