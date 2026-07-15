@@ -47,7 +47,25 @@ int usage()
     fprintf(stderr, "  index         create index\n");
     fprintf(stderr, "  mem           alignment\n");
     fprintf(stderr, "  version       print version number\n");
+    fprintf(stderr, "  which         print selected binary path and SIMD platform\n");
     return 1;
+}
+
+static const char *compile_platform(void)
+{
+#if __AVX512BW__
+    return "avx512bw";
+#elif __AVX2__
+    return "avx2";
+#elif __AVX__
+    return "avx";
+#elif __SSE4_2__
+    return "sse42";
+#elif __SSE4_1__
+    return "sse41";
+#else
+    return "unknown";
+#endif
 }
 
 int main(int argc, char* argv[])
@@ -106,6 +124,13 @@ int main(int argc, char* argv[])
     else if (strcmp(argv[1], "version") == 0)
     {
         puts(PACKAGE_VERSION);
+        return 0;
+    }
+    else if (strcmp(argv[1], "which") == 0 || strcmp(argv[1], "--which") == 0)
+    {
+        /* Direct ISA binary (or already-dispatched process): report self. */
+        printf("binary: %s\n", argv[0]);
+        printf("platform: %s\n", compile_platform());
         return 0;
     } else {
         fprintf(stderr, "ERROR: unknown command '%s'\n", argv[1]);

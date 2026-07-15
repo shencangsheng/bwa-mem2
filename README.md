@@ -16,23 +16,28 @@
 
 ## Getting Started
 ```sh
-# Use precompiled binaries (recommended)
-curl -L https://github.com/bwa-mem2/bwa-mem2/releases/download/v2.2.1/bwa-mem2-2.2.1_x64-linux.tar.bz2 \
+# Use precompiled binaries (recommended) — one tarball, auto CPU dispatch
+# Replace VERSION with a release tag, e.g. v2.3.8
+curl -L https://github.com/shencangsheng/bwa-mem2/releases/download/VERSION/bwa-mem2-VERSION_x64-linux.tar.bz2 \
   | tar jxf -
-bwa-mem2-2.2.1_x64-linux/bwa-mem2 index ref.fa
-bwa-mem2-2.2.1_x64-linux/bwa-mem2 mem ref.fa read1.fq read2.fq > out.sam
+# Root = upstream Intel official multi (same idea as make CXX=icpc multi)
+bwa-mem2-VERSION_x64-linux/bwa-mem2 index ref.fa
+bwa-mem2-VERSION_x64-linux/bwa-mem2 mem ref.fa read1.fq read2.fq > out.sam
+# AMD / no-CLWB: use GCC multi under extra/
+# bwa-mem2-VERSION_x64-linux/extra/bwa-mem2.gcc-full mem ...
 
 # Compile from source (not recommended for general users)
 # Get the source
-git clone --recursive https://github.com/bwa-mem2/bwa-mem2
+git clone --recursive https://github.com/shencangsheng/bwa-mem2
 cd bwa-mem2
 # Or
-git clone https://github.com/bwa-mem2/bwa-mem2
+git clone https://github.com/shencangsheng/bwa-mem2
 cd bwa-mem2
 git submodule init
 git submodule update
-# Compile and run
-make
+# Upstream-style (Intel):  make -f Makefile.platforms PLATFORM=intel-multi
+# GCC multi (AMD-friendly): make -f Makefile.platforms PLATFORM=gcc-multi
+make -f Makefile.platforms PLATFORM=intel-multi
 ./bwa-mem2
 ```
 
@@ -49,18 +54,34 @@ bwa-mem2 is distributed under the MIT license.
 ## Installation
 
 For general users, it is recommended to use the precompiled binaries from the
-[release page][rel]. These binaries were compiled with the Intel compiler and
-runs faster than gcc-compiled binaries. The precompiled binaries also
-indirectly support CPU dispatch. The `bwa-mem2` binary can automatically choose
-the most efficient implementation based on the SIMD instruction set available
-on the running machine. Precompiled binaries were generated on a CentOS7
-machine using the following command line:
+[release page][rel]. Each release ships **one** `bwa-mem2-<tag>_x64-linux.tar.bz2`:
+
+```
+bwa-mem2-<tag>_x64-linux/
+  bwa-mem2                        # root: Intel official dispatcher (CPUID → exec)
+  bwa-mem2.sse41 … .avx512bw
+  extra/                          # flat (no nested dirs)
+    bwa-mem2.gcc-full             # GCC multi (+ .gcc-full.<isa> siblings)
+    bwa-mem2.gcc-avx2-fleet
+    bwa-mem2.intel-avx512-noclwb
+    bwa-mem2.sse41 … bwa-mem2.avx512bw
+```
+
+- **Root** matches upstream `make CXX=icpc multi` (`PLATFORM=intel-multi`).
+- **`extra/`** is a flat directory of extended builds from this fork.
+
+AVX-512 on AMD / hosts without CLWB: `./extra/bwa-mem2.gcc-full` or
+`./extra/bwa-mem2.intel-avx512-noclwb`
+([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160),
+[#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)).
+
 ```sh
-make CXX=icpc multi
+make -f Makefile.platforms PLATFORM=intel-multi   # root layout
+make -f Makefile.platforms PLATFORM=gcc-multi     # → extra/bwa-mem2.gcc-full
 ```
 
 [bwa]: https://github.com/lh3/bwa
-[rel]: https://github.com/bwa-mem2/bwa-mem2/releases
+[rel]: https://github.com/shencangsheng/bwa-mem2/releases
 
 ## Usage
 
@@ -77,6 +98,12 @@ Where
 # Run "./bwa-mem2 mem" to get all options
 ./bwa-mem2 mem -t <num_threads> <prefix> <reads.fq/fa> > out.sam
 Where <prefix> is the prefix specified when creating the index or the path to the reference fasta file in case no prefix was provided.
+
+# Show which ISA binary the dispatcher will use on this machine
+./bwa-mem2 which
+# binary: /path/to/bwa-mem2.avx2
+# platform: avx2
+# cpu_simd: avx2,avx,sse4_2,sse4_1
 ```
 
 ## Performance

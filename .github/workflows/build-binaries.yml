@@ -1,5 +1,8 @@
-# Build SIMD-specific bwa-mem2 binaries via platform Makefiles
-# (upstream Makefile is left untouched).
+# Build all PLATFORM variants (same set as v2.3.7), then ship ONE tar.bz2:
+#
+#   <pkg>/
+#     bwa-mem2*                      # root = upstream intel-official (icpc multi)
+#     extra/bwa-mem2.<artifact>[.<isa>]   # flat; multi bundles keep dispatcher+ISA siblings
 #
 #   make -f Makefile.platforms PLATFORM=<name>
 #
@@ -31,17 +34,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Root of the release tarball (upstream: make CXX=icpc multi)
+          - platform: intel-multi
+            artifact: intel-official
+            compiler: intel
           - platform: gcc-multi
             artifact: gcc-full
             compiler: gcc
           - platform: gcc-avx2
             artifact: gcc-avx2-fleet
             compiler: gcc
-          # Official-style: make CXX=icpc multi (AVX-512 uses -xCORE-AVX512 / CLWB)
-          - platform: intel-multi
-            artifact: intel-official
-            compiler: intel
-          # icpc AVX-512 via -march=skylake-avx512 (no CLWB gate)
           - platform: intel-avx512-noclwb
             artifact: intel-avx512-noclwb
             compiler: intel
@@ -86,7 +88,6 @@ jobs:
           test -n "${ICPX}" && test -n "${ICX}"
           sudo ln -sfn "${ICPX}" /usr/local/bin/icpc
           sudo ln -sfn "${ICX}" /usr/local/bin/icc
-          # Drivers + libs for later steps (Build also re-sources setvars.sh)
           echo "/usr/local/bin" >> "${GITHUB_PATH}"
           dirname "${ICPX}" >> "${GITHUB_PATH}"
           dirname "${ICX}" >> "${GITHUB_PATH}"
@@ -105,50 +106,47 @@ jobs:
           ls -lh bwa-mem2 bwa-mem2.* || true
           file bwa-mem2 bwa-mem2.* || true
 
-      - name: Package
+      - name: Stage binaries
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          case "${VERSION}" in
-            v*) ;;
-            *) VERSION="sha-${GITHUB_SHA::8}" ;;
-          esac
-          PKG="bwa-mem2-${VERSION}_${{ matrix.artifact }}_x64-linux"
-          mkdir -p "${PKG}"
+          STAGE="stage/${{ matrix.artifact }}"
+          mkdir -p "${STAGE}"
           for b in bwa-mem2 bwa-mem2.sse41 bwa-mem2.sse42 bwa-mem2.avx \
                    bwa-mem2.avx2 bwa-mem2.avx512bw; do
-            [[ -e "$b" ]] && cp -a "$b" "${PKG}/"
+            [[ -e "$b" ]] && cp -a "$b" "${STAGE}/"
           done
-          cp -a scripts/select-binary.sh README.md LICENSE "${PKG}/"
-          chmod +x "${PKG}"/bwa-mem2* "${PKG}/select-binary.sh" 2>/dev/null || true
           {
             echo "platform=${{ matrix.platform }}"
             echo "compiler=${{ matrix.compiler }}"
             echo "artifact=${{ matrix.artifact }}"
             if command -v icpc >/dev/null 2>&1; then icpc --version | head -n1; fi
             if command -v g++ >/dev/null 2>&1; then g++ --version | head -n1; fi
-          } > "${PKG}/BUILD_INFO.txt"
-          tar -cjf "${PKG}.tar.bz2" "${PKG}"
-          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+          } > "${STAGE}/BUILD_INFO.txt"
+          ls -lh "${STAGE}"
 
-      - name: Upload artifact
+      - name: Upload staged binaries
         uses: actions/upload-artifact@v4
         with:
-          name: bwa-mem2-${{ matrix.artifact }}
-          path: ${{ env.ARTIFACT }}
+          name: bin-${{ matrix.artifact }}
+          path: stage/${{ matrix.artifact }}
           if-no-files-found: error
 
   build-single:
-    name: Single ${{ matrix.platform }}
+    name: Single ${{ matrix.artifact }}
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - gcc-sse41
-          - gcc-sse42
-          - gcc-avx
-          - gcc-avx2-bin
-          - gcc-avx512bw
+        include:
+          - platform: gcc-sse41
+            artifact: sse41
+          - platform: gcc-sse42
+            artifact: sse42
+          - platform: gcc-avx
+            artifact: avx
+          - platform: gcc-avx2-bin
+            artifact: avx2
+          - platform: gcc-avx512bw
+            artifact: avx512bw
     steps:
       - name: Checkout (with safestringlib submodule)
         uses: actions/checkout@v4
@@ -168,51 +166,153 @@ jobs:
           ls -lh bwa-mem2*
           file bwa-mem2*
 
-      - name: Package
+      - name: Stage binaries
+        run: |
+          STAGE="stage/${{ matrix.artifact }}"
+          mkdir -p "${STAGE}"
+          cp -a bwa-mem2 "${STAGE}/"
+          for b in bwa-mem2.*; do
+            [[ -e "$b" ]] && cp -a "$b" "${STAGE}/"
+          done
+          {
+            echo "platform=${{ matrix.platform }}"
+            echo "compiler=gcc"
+            echo "artifact=${{ matrix.artifact }}"
+            g++ --version | head -n1
+          } > "${STAGE}/BUILD_INFO.txt"
+          ls -lh "${STAGE}"
+
+      - name: Upload staged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.artifact }}
+          path: stage/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  package:
+    name: Assemble single tar.bz2
+    needs: [build-bundle, build-single]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (docs / scripts)
+        uses: actions/checkout@v4
+
+      - name: Download all staged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bin-*
+          merge-multiple: false
+
+      - name: Assemble package layout
         run: |
           VERSION="${GITHUB_REF_NAME}"
           case "${VERSION}" in
             v*) ;;
             *) VERSION="sha-${GITHUB_SHA::8}" ;;
           esac
-          ISA="${{ matrix.platform }}"
-          ISA="${ISA#gcc-}"
-          ISA="${ISA%-bin}"
-          PKG="bwa-mem2-${VERSION}_${ISA}_x64-linux"
-          mkdir -p "${PKG}"
-          cp -a bwa-mem2 README.md LICENSE "${PKG}/"
-          for b in bwa-mem2.*; do
-            [[ -e "$b" ]] && cp -a "$b" "${PKG}/"
-          done
-          chmod +x "${PKG}"/bwa-mem2*
-          tar -cjf "${PKG}.tar.bz2" "${PKG}"
-          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+          PKG="bwa-mem2-${VERSION}_x64-linux"
+          mkdir -p "${PKG}/extra"
 
-      - name: Upload artifact
+          echo "Downloaded artifacts:"
+          find dist -type f | sort
+
+          # Root = upstream-style intel-official (make CXX=icpc multi)
+          ROOT_SRC=""
+          for d in dist/bin-intel-official dist/intel-official; do
+            if [[ -d "$d" ]]; then ROOT_SRC="$d"; break; fi
+          done
+          test -n "${ROOT_SRC}"
+          test -x "${ROOT_SRC}/bwa-mem2"
+          cp -a "${ROOT_SRC}"/. "${PKG}/"
+          mv "${PKG}/BUILD_INFO.txt" "${PKG}/BUILD_INFO.root.txt" 2>/dev/null || true
+
+          # Flat extra/: rename so multi dispatchers still find sibling ISA bins.
+          #   multi:  bwa-mem2.<artifact> + bwa-mem2.<artifact>.<isa>
+          #   single: bwa-mem2.<artifact>
+          for dir in dist/bin-*; do
+            [[ -d "$dir" ]] || continue
+            name="${dir#dist/bin-}"
+            if [[ "$name" == "intel-official" ]]; then
+              continue
+            fi
+
+            if [[ -f "${dir}/BUILD_INFO.txt" ]]; then
+              cp -a "${dir}/BUILD_INFO.txt" "${PKG}/extra/BUILD_INFO.${name}.txt"
+            fi
+
+            isa_siblings=0
+            for isa in sse41 sse42 avx avx2 avx512bw; do
+              if [[ -e "${dir}/bwa-mem2.${isa}" ]]; then
+                isa_siblings=1
+                break
+              fi
+            done
+
+            if [[ "${isa_siblings}" -eq 1 && -e "${dir}/bwa-mem2" ]]; then
+              # Multi bundle: keep dispatcher + prefixed ISA siblings
+              cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
+              for isa in sse41 sse42 avx avx2 avx512bw; do
+                if [[ -e "${dir}/bwa-mem2.${isa}" ]]; then
+                  cp -a "${dir}/bwa-mem2.${isa}" "${PKG}/extra/bwa-mem2.${name}.${isa}"
+                fi
+              done
+            else
+              # Single binary (or intel-avx512-noclwb style)
+              if [[ -e "${dir}/bwa-mem2" ]]; then
+                cp -a "${dir}/bwa-mem2" "${PKG}/extra/bwa-mem2.${name}"
+              elif [[ -e "${dir}/bwa-mem2.avx512bw" ]]; then
+                cp -a "${dir}/bwa-mem2.avx512bw" "${PKG}/extra/bwa-mem2.${name}"
+              else
+                echo "ERROR: no binary in ${dir}" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          cp -a scripts/select-binary.sh README.md LICENSE "${PKG}/"
+          cp -a scripts/extra-README.md "${PKG}/extra/README.md"
+          chmod +x "${PKG}"/bwa-mem2* "${PKG}/select-binary.sh" 2>/dev/null || true
+          chmod +x "${PKG}/extra"/bwa-mem2* 2>/dev/null || true
+
+          {
+            echo "layout=single-tarball-flat-extra"
+            echo "root=intel-official (upstream make CXX=icpc multi)"
+            echo "extra=flat files under extra/ (see extra/README.md)"
+            echo "note=Root bwa-mem2 auto-dispatches among root ISA binaries via CPUID."
+            echo "note=AMD / no-CLWB: ./extra/bwa-mem2.gcc-full or ./extra/bwa-mem2.intel-avx512-noclwb"
+          } > "${PKG}/BUILD_INFO.txt"
+
+          echo "Package tree:"
+          find "${PKG}" -maxdepth 2 -type f | sort
+          tar -cjf "${PKG}.tar.bz2" "${PKG}"
+          ls -lh "${PKG}.tar.bz2"
+          echo "ARTIFACT=${PKG}.tar.bz2" >> "${GITHUB_ENV}"
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Upload release tarball
         uses: actions/upload-artifact@v4
         with:
-          name: bwa-mem2-${{ matrix.platform }}
+          name: bwa-mem2-x64-linux
           path: ${{ env.ARTIFACT }}
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: [build-bundle, build-single]
+    needs: [package]
     runs-on: ubuntu-22.04
     if: >
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.create_release)
     steps:
-      - name: Download all build artifacts
+      - name: Download release tarball
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          name: bwa-mem2-x64-linux
+          path: release-assets
 
-      - name: Flatten tarballs
-        run: |
-          mkdir -p release-assets
-          find dist -type f -name '*.tar.bz2' -exec cp -a {} release-assets/ \;
-          ls -lh release-assets/
+      - name: List release assets
+        run: ls -lh release-assets/
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
@@ -222,28 +322,34 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           body: |
-            ## Multi-ISA Linux x86_64 (`Makefile.platforms`)
+            ## Single package — Multi-ISA Linux x86_64
 
-            Upstream `Makefile` unchanged:
-            ```bash
-            make -f Makefile.platforms PLATFORM=<name>
+            One tarball. **Root** matches upstream Intel official multi (`make CXX=icpc multi`);
+            extended builds live under `extra/`.
+
+            ```
+            bwa-mem2-${{ github.ref_name }}_x64-linux/
+              bwa-mem2                        # Intel official dispatcher
+              bwa-mem2.sse41 … .avx512bw
+              extra/                          # flat (no subdirs)
+                bwa-mem2.gcc-full             # GCC multi (+ .sse41…avx512bw siblings)
+                bwa-mem2.gcc-avx2-fleet       # up to AVX2
+                bwa-mem2.intel-avx512-noclwb
+                bwa-mem2.sse41 … bwa-mem2.avx512bw   # single-ISA pins
             ```
 
-            ### Bundles
-
-            | Package / PLATFORM | Toolchain | Notes |
-            |--------------------|-----------|-------|
-            | `gcc-full` / `gcc-multi` | GCC | Full set + dispatcher; no CLWB gate |
-            | `gcc-avx2-fleet` / `gcc-avx2` | GCC | Up to AVX2 (AMD Zen1–Zen3 / Intel AVX2) |
-            | `intel-official` / `intel-multi` | Intel oneAPI (`icpc`→`icpx`) | Same as upstream `make CXX=icpc multi`; AVX-512 needs CLWB + Intel CPU ([#160](https://github.com/bwa-mem2/bwa-mem2/issues/160), [#236](https://github.com/bwa-mem2/bwa-mem2/issues/236)) |
-            | `intel-avx512-noclwb` / `intel-avx512-noclwb` | Intel oneAPI | Single AVX-512 via `-march=skylake-avx512` (no CLWB) |
-
-            ### Single-ISA (GCC)
-
-            `sse41` / `sse42` / `avx` / `avx2` / `avx512bw` — pin one binary per ECS image.
+            ### Usage (default = Intel official at root)
 
             ```bash
-            ./bwa-mem2.avx2 mem ...
-            ./select-binary.sh . mem ref.fa r1.fq r2.fq
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/bwa-mem2-${{ github.ref_name }}_x64-linux.tar.bz2 \
+              | tar jxf -
+            bwa-mem2-${{ github.ref_name }}_x64-linux/bwa-mem2 mem ref.fa r1.fq r2.fq > out.sam
+            ```
+
+            AMD / no-CLWB hosts:
+            ```bash
+            ./extra/bwa-mem2.gcc-full mem ...
+            # or
+            ./extra/bwa-mem2.intel-avx512-noclwb mem ...
             ```
           files: release-assets/*.tar.bz2

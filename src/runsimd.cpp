@@ -149,49 +149,109 @@ static int exe_path(const char *exe, int max, char buf[], int *base_st)
 	return ret;
 }
 
+/* Append simd suffix to prefix; return 1 if the path exists and is executable.
+ * On success prefix holds the full path; on failure prefix is restored. */
+static int try_binary(char *prefix, const char *simd)
+{
+	struct stat st;
+	int prefix_len = strlen(prefix);
+	strcat_s(prefix, PATH_MAX, simd);
+	if (stat(prefix, &st) == 0 && (st.st_mode & S_IXUSR))
+		return 1;
+	prefix[prefix_len] = 0;
+	return 0;
+}
+
+/* Prefer highest ISA available on this CPU that also has a shipped binary. */
+static const char *select_simd_suffix(int simd, char *prefix)
+{
+	if ((simd & SIMD_AVX512BW) && try_binary(prefix, ".avx512bw")) return "avx512bw";
+	if ((simd & SIMD_AVX2) && try_binary(prefix, ".avx2")) return "avx2";
+	if ((simd & SIMD_AVX) && try_binary(prefix, ".avx")) return "avx";
+	if ((simd & SIMD_SSE4_2) && try_binary(prefix, ".sse42")) return "sse42";
+	if ((simd & SIMD_SSE4_1) && try_binary(prefix, ".sse41")) return "sse41";
+	return NULL;
+}
+
+static void print_cpu_simd(int simd)
+{
+	int first = 1;
+	fputs("cpu_simd:", stdout);
+#define EMIT(flag, name) do { \
+	if (simd & (flag)) { \
+		fputs(first ? " " : ",", stdout); \
+		fputs(name, stdout); \
+		first = 0; \
+	} \
+} while (0)
+	EMIT(SIMD_AVX512BW, "avx512bw");
+	EMIT(SIMD_AVX2, "avx2");
+	EMIT(SIMD_AVX, "avx");
+	EMIT(SIMD_SSE4_2, "sse4_2");
+	EMIT(SIMD_SSE4_1, "sse4_1");
+#undef EMIT
+	if (first) fputs(" none", stdout);
+	fputc('\n', stdout);
+}
+
 static void test_and_launch(char *argv[], char *prefix, const char *simd) // we assume prefix is long enough
 {
 	struct stat st;
-    int prefix_len = strlen(prefix);
+	int prefix_len = strlen(prefix);
 	strcat_s(prefix, PATH_MAX, simd);
-    fprintf(stderr, "Looking to launch executable \"%s\", simd = %s\n", prefix, simd);
-    if(stat(prefix, &st) == 0)
-    {
-        if (st.st_mode & S_IXUSR) {
-            fprintf(stderr, "Launching executable \"%s\"\n", prefix);
-            execv(prefix, argv);
-        }
-        else
-        {
-            fprintf(stderr, "(st.st_mode & S_IXUSR) = %d, can not run executable: %s\n", st.st_mode & S_IXUSR, prefix);
-        }
-    }
-    else
-    {
-        fprintf(stderr, "stat(prefix, &st) = %d, can not run executable: %s\n", stat(prefix, &st), prefix);
-    }
-    prefix[prefix_len] = 0;
+	fprintf(stderr, "Looking to launch executable \"%s\", simd = %s\n", prefix, simd);
+	if (stat(prefix, &st) == 0)
+	{
+		if (st.st_mode & S_IXUSR) {
+			fprintf(stderr, "Launching executable \"%s\"\n", prefix);
+			execv(prefix, argv);
+		}
+		else
+		{
+			fprintf(stderr, "(st.st_mode & S_IXUSR) = %d, can not run executable: %s\n", st.st_mode & S_IXUSR, prefix);
+		}
+	}
+	else
+	{
+		fprintf(stderr, "stat(prefix, &st) = %d, can not run executable: %s\n", stat(prefix, &st), prefix);
+	}
+	prefix[prefix_len] = 0;
 }
 
 int main(int argc, char *argv[])
 {
 	char buf[PATH_MAX], *prefix, *argv0 = argv[0];
 	int ret, base_st, simd;
-	//int prefix_len;
+	int show_which = (argc >= 2 &&
+		(strcmp(argv[1], "which") == 0 || strcmp(argv[1], "--which") == 0));
+
 	ret = exe_path(argv0, PATH_MAX, buf, &base_st);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: prefix is too long!\n");
 		return 1;
 	}
-	//printf("%s\n", buf);
 	if ((prefix = (char*)malloc(PATH_MAX)) == NULL) {
 		fprintf(stderr, "ERROR: out of memory.\n");
 		return 1;
-        }
+	}
 	strcpy_s(prefix, PATH_MAX, buf);
 	strcat_s(prefix, PATH_MAX, &argv0[base_st]);
-	//prefix_len = strlen(prefix);
 	simd = x86_simd();
+
+	if (show_which) {
+		const char *platform = select_simd_suffix(simd, prefix);
+		if (platform == NULL) {
+			fprintf(stderr, "ERROR: fail to find the right executable\n");
+			free(prefix);
+			return 2;
+		}
+		printf("binary: %s\n", prefix);
+		printf("platform: %s\n", platform);
+		print_cpu_simd(simd);
+		free(prefix);
+		return 0;
+	}
+
 	if (simd & SIMD_AVX512BW) test_and_launch(argv, prefix, ".avx512bw");
 	if (simd & SIMD_AVX2) test_and_launch(argv, prefix, ".avx2");
 	if (simd & SIMD_AVX) test_and_launch(argv, prefix, ".avx");
