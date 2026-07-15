@@ -32,8 +32,13 @@ yum install -y -q zlib-devel >/dev/null
 
 # Prefer the manylinux-provided modern GCC when present.
 if [[ -x /opt/rh/devtoolset-10/root/usr/bin/g++ ]]; then
+  # SCL enable scripts expand MANPATH (and similar) without defaults.
+  # Under `set -u` that aborts the whole shell during `source` — `|| true`
+  # never runs. Drop nounset only for the enable script.
   # shellcheck disable=SC1091
-  source /opt/rh/devtoolset-10/enable || true
+  set +u
+  source /opt/rh/devtoolset-10/enable
+  set -u
 fi
 # manylinux2014 images also ship /usr/local or /opt/python toolchains; default g++ is fine if ≥7.
 g++ --version | first_line
