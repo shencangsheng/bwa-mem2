@@ -226,7 +226,8 @@ static const char *portable_handoff_reason(int simd, int is_intel, int has_clwb)
 }
 
 /* Prefer highest ISA available on this CPU that also has a shipped binary.
- * allow_avx512 is false only for root Intel siblings when the CPU lacks CLWB. */
+ * allow_avx512 is false for: root Intel without CLWB, and all non-Intel CPUs
+ * (AMD Zen4 AVX512BW via generic -mavx512bw is often much slower than AVX2). */
 static const char *select_simd_suffix(int simd, int allow_avx512, char *prefix)
 {
 	if ((simd & SIMD_AVX512BW) && allow_avx512 && try_binary(prefix, ".avx512bw"))
@@ -323,8 +324,9 @@ int main(int argc, char *argv[])
 	simd = x86_simd();
 	is_intel = x86_is_intel();
 	has_clwb = x86_has_clwb();
-	/* Root Intel .avx512bw needs CLWB; GCC multi / other names do not. */
-	allow_avx512 = has_clwb || !is_root_dispatcher(prefix);
+	/* Root Intel .avx512bw needs CLWB. Nested GCC multi may still use AVX512
+	 * on Intel (e.g. no-CLWB handoff). Non-Intel (AMD) always skips AVX512. */
+	allow_avx512 = is_intel && (has_clwb || !is_root_dispatcher(prefix));
 	handoff_reason = portable_handoff_reason(simd, is_intel, has_clwb);
 
 	/* Super-dispatcher: root bwa-mem2 keeps Intel-compatible hosts on the
@@ -334,8 +336,17 @@ int main(int argc, char *argv[])
 		const char *portable = select_portable_handoff(prefix, handoff);
 		if (portable != NULL) {
 			if (show_which) {
-				printf("binary: %s\n", handoff);
-				printf("platform: %s\n", portable);
+				/* Resolve nested ISA the same way gcc-full would after exec. */
+				char nested[PATH_MAX];
+				const char *isa;
+				int nested_allow_avx512 = is_intel; /* nested: never a root dispatcher */
+				strcpy_s(nested, PATH_MAX, handoff);
+				isa = select_simd_suffix(simd, nested_allow_avx512, nested);
+				printf("binary: %s\n", isa ? nested : handoff);
+				if (isa)
+					printf("platform: %s.%s\n", portable, isa);
+				else
+					printf("platform: %s\n", portable);
 				printf("dispatch: portable (%s)\n", handoff_reason);
 				print_cpu_simd(simd);
 				printf("cpu_vendor: %s\n", is_intel ? "intel" : "non-intel");

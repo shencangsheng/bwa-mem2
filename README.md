@@ -73,8 +73,8 @@ bwa-mem2-<tag>_centos7_x64-linux/
 Expected ECS dispatch:
 
 - Intel Xeon Platinum with CLWB uses the upstream Intel-optimized ISA sibling.
-- Intel Xeon Platinum 8163 with CLWB hidden/disabled uses `gcc-full`.
-- AMD EPYC always uses `gcc-full`, which then selects its best supported ISA.
+- Intel Xeon Platinum 8163 with CLWB hidden/disabled uses `gcc-full` (may still pick AVX512BW).
+- AMD EPYC always uses `gcc-full`, then prefers **AVX2** over AVX512BW (Zen4 AVX512 is often slower for this codebase).
 
 ```sh
 make -f Makefile.platforms PLATFORM=gcc-multi     # CentOS 7–style multi

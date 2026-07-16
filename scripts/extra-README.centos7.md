@@ -6,7 +6,8 @@ The complete package runs on **CentOS 7 / RHEL 7** and newer.
 
 Root `../bwa-mem2` is a **super-dispatcher** over the upstream v2.2.1
 Intel-optimized ISA siblings. It hands AMD EPYC and Intel AVX-512 CPUs without
-CLWB to `bwa-mem2.gcc-full` here. Prefer `../bwa-mem2`.
+CLWB to `bwa-mem2.gcc-full` here. On AMD, `gcc-full` prefers AVX2 over
+AVX512BW. Prefer `../bwa-mem2`.
 
 | File | Role |
 |------|------|

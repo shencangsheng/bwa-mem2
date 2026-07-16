@@ -12,12 +12,21 @@ DIR="${1:?usage: $0 <bin-dir> [--print|bwa-mem2 args...]}"
 shift || true
 
 flags=""
+vendor=""
 if [[ -r /proc/cpuinfo ]]; then
   flags=$(grep -m1 '^flags' /proc/cpuinfo || true)
+  vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo || true)
+fi
+
+# AMD Zen4 exposes AVX512BW, but generic -mavx512bw builds are often slower
+# than AVX2 for bwa-mem2; match the C dispatcher and skip AVX512 on non-Intel.
+allow_avx512=1
+if [[ "$vendor" != *GenuineIntel* ]]; then
+  allow_avx512=0
 fi
 
 pick=""
-if [[ "$flags" == *avx512bw* ]] && [[ -x "$DIR/bwa-mem2.avx512bw" ]]; then
+if [[ "$allow_avx512" -eq 1 ]] && [[ "$flags" == *avx512bw* ]] && [[ -x "$DIR/bwa-mem2.avx512bw" ]]; then
   pick="$DIR/bwa-mem2.avx512bw"
 elif [[ "$flags" == *avx2* ]] && [[ -x "$DIR/bwa-mem2.avx2" ]]; then
   pick="$DIR/bwa-mem2.avx2"

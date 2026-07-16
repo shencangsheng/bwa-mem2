@@ -238,7 +238,8 @@ jobs:
             The dispatcher and GCC fallback are built in manylinux2014; the
             pinned upstream v2.2.1 Intel siblings are verified against the same
             glibc 2.17 ceiling. AMD EPYC and Intel AVX-512 CPUs without CLWB
-            automatically use `extra/bwa-mem2.gcc-full`.
+            automatically use `extra/bwa-mem2.gcc-full` (AMD then prefers AVX2
+            over AVX512BW).
 
             ### Usage (CentOS 7 example)
 
